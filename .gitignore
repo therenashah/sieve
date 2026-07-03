@@ -1,0 +1,33 @@
+# secrets
+.env
+*.pem
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# sqlite
+backend/db/
+*.db
+*.sqlite3
+
+# node / next
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+
+# data (may contain PII)
+data/jds/*
+data/resumes/*
+!data/jds/.gitkeep
+!data/resumes/.gitkeep
+
+# os / editor
+.DS_Store
+.vscode/
+.idea/
