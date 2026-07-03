@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel
 
-from app.llm.client import PipelineLLMError, call_json
+from app.llm.client import PipelineLLMError, call_structured
 from app.llm.prompts import RUBRIC_PROMPT
 from app.models import ApplyResult, Criterion, Rubric, RubricDiff
 
@@ -20,7 +20,7 @@ async def generate_rubric(jd_text: str) -> Rubric:
     becomes a higher-weight criterion). `Rubric`'s own validator auto-normalizes if the
     weights don't sum to exactly 1.0, and hard-fails on any negative weight.
     """
-    draft = await call_json(
+    draft = await call_structured(
         RUBRIC_PROMPT.format(jd_text=jd_text),
         _RubricDraft,
         purpose="generate_rubric",
