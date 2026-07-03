@@ -1,15 +1,18 @@
 import { getToken } from "./auth";
 import type {
   ApplyRubricResult,
+  CandidateDetail,
   ChatTurnResponse,
   CvUploadResult,
   FilterSet,
   HealthResponse,
   Job,
+  JobQuestion,
   RankedCandidatesResponse,
   Rubric,
   RubricChatResponse,
   ScanResponse,
+  ScreeningAnswer,
   SessionStatusResponse,
   TrackerUploadResult,
   TriggerScreeningResponse,
@@ -174,11 +177,64 @@ export function parseFilters(jobId: number | string, text: string): Promise<Filt
   });
 }
 
+export function getCandidateDetail(
+  jobId: number | string,
+  candidateId: number | string
+): Promise<CandidateDetail> {
+  return authFetch<CandidateDetail>(`/api/jobs/${jobId}/candidates/${candidateId}`);
+}
+
+export function listQuestions(jobId: number | string): Promise<JobQuestion[]> {
+  return authFetch<JobQuestion[]>(`/api/jobs/${jobId}/questions`);
+}
+
+export function addQuestion(jobId: number | string, questionText: string): Promise<JobQuestion> {
+  return authFetch<JobQuestion>(`/api/jobs/${jobId}/questions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question_text: questionText }),
+  });
+}
+
+export async function deleteQuestion(jobId: number | string, questionId: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}/questions/${questionId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await toErrorMessage(response));
+  }
+}
+
+// Synchronously (re)generates AI questions from the job's stored JD text — mainly for
+// jobs whose JD predates AI question generation, or if the background pass silently
+// failed. Returns the full refreshed pool.
+export function generateQuestions(jobId: number | string): Promise<JobQuestion[]> {
+  return authFetch<JobQuestion[]>(`/api/jobs/${jobId}/questions/generate`, { method: "POST" });
+}
+
+export function getScreeningAnswers(
+  jobId: number | string,
+  candidateId: number | string,
+  sessionId: number | string
+): Promise<ScreeningAnswer[]> {
+  return authFetch<ScreeningAnswer[]>(
+    `/api/jobs/${jobId}/candidates/${candidateId}/screening-sessions/${sessionId}/answers`
+  );
+}
+
+// `questionIds` is the recruiter's confirmed selection from the trigger modal — omit it
+// (or pass an empty array) to fall back to every mandatory question on the job.
 export function triggerScreening(
   jobId: number | string,
-  candidateId: number,
+  candidateId: number | string,
+  questionIds: number[] = []
 ): Promise<TriggerScreeningResponse> {
-  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/screening-link`, { method: "POST" });
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/screening-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question_ids: questionIds }),
+  });
 }
 
 export function getChatSession(token: string): Promise<SessionStatusResponse> {

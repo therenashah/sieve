@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS job_questions (
     job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     question_text TEXT NOT NULL,
     order_index INTEGER NOT NULL,
-    is_mandatory INTEGER NOT NULL DEFAULT 1
+    is_mandatory INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'default'   -- default | ai | custom
 );
 
 CREATE TABLE IF NOT EXISTS candidates (
@@ -104,6 +105,7 @@ CREATE TABLE IF NOT EXISTS screening_sessions (
     pending_question_text TEXT,
     profile_followup_count INTEGER NOT NULL DEFAULT 0,
     seclore_qa_count INTEGER NOT NULL DEFAULT 0,
+    selected_question_ids TEXT,      -- JSON list of job_questions.id chosen by the recruiter for this trigger
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL,
     completed_at TEXT,
@@ -128,6 +130,24 @@ CREATE TABLE IF NOT EXISTS screening_answers (
     question_type TEXT NOT NULL,                     -- mandatory | profile_followup
     answer_text TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per (candidate, round). Upserted whenever a round produces a fresh
+-- evaluation — e.g. the HR screening chat finishing runs an LLM pass and
+-- writes its result here. `score` is that round's own opinion, not a global
+-- fitment number; rounds a pipeline hasn't run yet (e.g. resume_screening
+-- until that pipeline ships) simply have no row, and the UI shows it empty.
+CREATE TABLE IF NOT EXISTS round_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    round TEXT NOT NULL,             -- resume_screening | hr_screening | l1 | l2 | l3 | pre_offer
+    score INTEGER,
+    summary TEXT,
+    key_highlights_json TEXT,        -- JSON list of strings
+    flags_json TEXT,                 -- JSON list of {"type": "red"|"green", "detail": "..."}
+    session_id INTEGER REFERENCES screening_sessions(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(candidate_id, round)
 );
 
 CREATE TABLE IF NOT EXISTS recruiter_sessions (
@@ -196,10 +216,26 @@ _CANDIDATE_COLUMNS = {
     "resume_path": "TEXT",
     "screening_decision": "TEXT",
 }
+_JOB_QUESTION_COLUMNS = {"source": "TEXT NOT NULL DEFAULT 'default'"}
+_SCREENING_SESSION_COLUMNS = {"selected_question_ids": "TEXT"}
+
+# Generic HR screening questions every job should have regardless of its JD —
+# inserted for new jobs at creation time, and backfilled onto any job that's
+# missing them (by exact text match, so re-running this is a no-op).
+DEFAULT_HR_QUESTIONS = [
+    "Are you comfortable working from Mumbai (or relocating)?",
+    "Why are you looking for a change?",
+    "Why are you interested in joining Seclore?",
+]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    for table, columns in (("jobs", _JOB_COLUMNS), ("candidates", _CANDIDATE_COLUMNS)):
+    for table, columns in (
+        ("jobs", _JOB_COLUMNS),
+        ("candidates", _CANDIDATE_COLUMNS),
+        ("job_questions", _JOB_QUESTION_COLUMNS),
+        ("screening_sessions", _SCREENING_SESSION_COLUMNS),
+    ):
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         for column, ddl_type in columns.items():
             if column not in existing:
@@ -209,6 +245,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_job_external ON candidates(job_id, external_id)"
     )
+    _backfill_default_hr_questions(conn)
+
+
+def _backfill_default_hr_questions(conn: sqlite3.Connection) -> None:
+    job_ids = [row["id"] for row in conn.execute("SELECT id FROM jobs")]
+    for job_id in job_ids:
+        existing_texts = {
+            row["question_text"]
+            for row in conn.execute("SELECT question_text FROM job_questions WHERE job_id = ?", (job_id,))
+        }
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(order_index), -1) AS m FROM job_questions WHERE job_id = ?", (job_id,)
+        ).fetchone()["m"]
+        next_index = max_order + 1
+        for question in DEFAULT_HR_QUESTIONS:
+            if question in existing_texts:
+                continue
+            conn.execute(
+                """INSERT INTO job_questions (job_id, question_text, order_index, is_mandatory, source)
+                   VALUES (?, ?, ?, 1, 'default')""",
+                (job_id, question, next_index),
+            )
+            next_index += 1
 
 
 def init_db() -> None:

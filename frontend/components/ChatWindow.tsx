@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+
 import { getChatSession, sendChatMessage, startChat } from "@/lib/api";
 import type { ChatMessage, SessionStatus } from "@/lib/types";
 
 export default function ChatWindow({ token }: { token: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<SessionStatus | "loading">("loading");
+  const [candidateName, setCandidateName] = useState("");
+  const [jobTitle, setJobTitle] = useState("");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +20,8 @@ export default function ChatWindow({ token }: { token: string }) {
       try {
         const session = await getChatSession(token);
         setStatus(session.session_status);
+        setCandidateName(session.candidate_name);
+        setJobTitle(session.job_title);
         if (session.messages.length > 0) {
           setMessages(session.messages);
         } else if (session.session_status === "active") {
@@ -26,6 +31,7 @@ export default function ChatWindow({ token }: { token: string }) {
         }
       } catch {
         setError("This screening link could not be loaded. It may be invalid.");
+        setStatus("expired");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -56,52 +62,57 @@ export default function ChatWindow({ token }: { token: string }) {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "70vh", border: "1px solid #3333", borderRadius: 8 }}>
-      <div style={{ flex: 1, overflowY: "auto", padding: "1rem" }}>
+    <div className="chat-shell">
+      <div className="chat-header">
+        <div className="brand-mark" style={{ marginBottom: 0 }}>
+          <span className="brand-mark-glyph" style={{ width: 30, height: 30, fontSize: "0.85rem" }}>
+            S
+          </span>
+          <span style={{ fontSize: "0.95rem" }}>sieve</span>
+        </div>
+        {jobTitle && (
+          <div className="chat-header-meta">
+            <span>{candidateName}</span>
+            <span>·</span>
+            <span>{jobTitle}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="chat-messages">
+        {status === "loading" && !error && <p className="round-empty">Loading…</p>}
+
         {messages.map((message, index) => (
-          <div
-            key={index}
-            style={{
-              display: "flex",
-              justifyContent: message.role === "user" ? "flex-end" : "flex-start",
-              marginBottom: "0.75rem",
-            }}
-          >
-            <div
-              style={{
-                maxWidth: "75%",
-                padding: "0.6rem 0.9rem",
-                borderRadius: 12,
-                background: message.role === "user" ? "#2563eb" : "#3333",
-                color: message.role === "user" ? "white" : "inherit",
-              }}
-            >
+          <div key={index} className={`chat-row ${message.role === "user" ? "chat-row-user" : ""}`}>
+            <div className={`chat-bubble ${message.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}`}>
               {message.content}
             </div>
           </div>
         ))}
+
         {status !== "active" && status !== "loading" && (
-          <p style={{ textAlign: "center", opacity: 0.7, marginTop: "1rem" }}>
+          <div className="chat-status-banner">
             {status === "completed" ? "This screening chat has ended." : "This screening link has expired."}
-          </p>
+          </div>
         )}
-        {error && <p style={{ color: "#dc2626" }}>{error}</p>}
+
+        {error && <div className="alert alert-error">{error}</div>}
         <div ref={bottomRef} />
       </div>
 
-      <div style={{ display: "flex", gap: "0.5rem", padding: "0.75rem", borderTop: "1px solid #3333" }}>
+      <div className="chat-input-row">
         <input
+          className="chat-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSend()}
           disabled={status !== "active" || sending}
           placeholder={status === "active" ? "Type your answer…" : "Chat ended"}
-          style={{ flex: 1, padding: "0.6rem", borderRadius: 8, border: "1px solid #3333" }}
         />
         <button
+          className="btn btn-primary"
           onClick={handleSend}
           disabled={status !== "active" || sending || !input.trim()}
-          style={{ padding: "0.6rem 1.2rem", borderRadius: 8 }}
         >
           Send
         </button>

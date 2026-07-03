@@ -172,3 +172,53 @@ export interface CvUploadResult {
   total_files_in_zip: number;
   total_candidates: number;
 }
+
+export type QuestionSource = "default" | "ai" | "custom";
+
+export interface JobQuestion {
+  id: number;
+  job_id: number;
+  question_text: string;
+  order_index: number;
+  is_mandatory: number;
+  source: QuestionSource;
+}
+
+export interface RoundFlag {
+  type: "red" | "green";
+  detail: string;
+}
+
+export interface RoundResult {
+  score: number | null;
+  summary: string | null;
+  key_highlights: string[];
+  flags: RoundFlag[];
+  updated_at: string;
+}
+
+export type RoundName = "resume_screening" | "hr_screening" | "l1" | "l2" | "l3" | "pre_offer";
+
+export interface ScreeningSessionSummary {
+  id: number;
+  token: string;
+  status: string;
+  phase: string;
+  created_at: string;
+  expires_at: string;
+  completed_at: string | null;
+  summary: string | null;
+  key_highlights: { key_highlights: string[] } | null;
+}
+
+export interface ScreeningAnswer {
+  question_text: string;
+  question_type: string; // mandatory | profile_followup
+  answer_text: string;
+  created_at: string;
+}
+
+export interface CandidateDetail extends Candidate {
+  rounds: Record<RoundName, RoundResult | null>;
+  screening_sessions: ScreeningSessionSummary[];
+}

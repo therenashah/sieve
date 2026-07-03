@@ -30,8 +30,10 @@ def test_create_session_raises_for_unknown_job():
 
 
 def test_mandatory_questions_seeded():
+    # 4 demo-seeded questions + 3 generic defaults backfilled onto every job (see
+    # db._backfill_default_hr_questions) = 7.
     questions = engine.get_mandatory_questions(job_id=1)
-    assert len(questions) == 4
+    assert len(questions) == 7
     assert questions[0]["order_index"] == 0
 
 

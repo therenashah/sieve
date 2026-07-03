@@ -1,3 +1,8 @@
+"use client";
+
+import { useState } from "react";
+
+import TriggerScreeningModal from "@/components/TriggerScreeningModal";
 import type { Candidate } from "@/lib/types";
 
 function scoreClass(score: number): string {
@@ -6,7 +11,41 @@ function scoreClass(score: number): string {
   return "score-low";
 }
 
-export default function CandidateTable({ candidates }: { candidates: Candidate[] }) {
+function ScreeningActionCell({ candidate }: { candidate: Candidate }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        className="btn btn-small btn-primary"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+      >
+        Trigger HR screening
+      </button>
+      {open && (
+        <TriggerScreeningModal
+          jobId={candidate.job_id}
+          candidateId={candidate.id}
+          candidateName={candidate.name}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+export default function CandidateTable({
+  candidates,
+  onRowClick,
+  showScreeningAction = false,
+}: {
+  candidates: Candidate[];
+  onRowClick?: (candidate: Candidate) => void;
+  showScreeningAction?: boolean;
+}) {
   return (
     <div className="table-scroll">
       <table className="table">
@@ -19,11 +58,16 @@ export default function CandidateTable({ candidates }: { candidates: Candidate[]
             <th>Source</th>
             <th>Applied</th>
             <th>CV</th>
+            {showScreeningAction && <th>HR Screening</th>}
           </tr>
         </thead>
         <tbody>
           {candidates.map((c) => (
-            <tr key={c.id}>
+            <tr
+              key={c.id}
+              onClick={() => onRowClick?.(c)}
+              style={onRowClick ? { cursor: "pointer" } : undefined}
+            >
               <td>
                 <div className="cand-name">{c.name}</div>
                 <div className="cand-email">{c.email}</div>
@@ -51,6 +95,11 @@ export default function CandidateTable({ candidates }: { candidates: Candidate[]
                   <span className="badge badge-warning">Missing</span>
                 )}
               </td>
+              {showScreeningAction && (
+                <td onClick={(e) => e.stopPropagation()}>
+                  <ScreeningActionCell candidate={c} />
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

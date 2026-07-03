@@ -81,12 +81,19 @@ async def call_text(
     messages: list[dict],
     *,
     max_tokens: int = 1024,
+    temperature: float = 0.4,
 ) -> str:
+    # A lower-than-default temperature measurably improves the screening chatbot's
+    # adherence to its per-turn instructions (e.g. "ask exactly this question") without
+    # making replies sound robotic — Bedrock's default (~1.0) was prone to the model
+    # improvising its own follow-up questions instead of following the turn's script.
     model = get_settings().bedrock_model_id
     async with _semaphore:
         started = time.monotonic()
         try:
-            text = await asyncio.to_thread(bedrock.invoke_claude, system, messages, max_tokens=max_tokens)
+            text = await asyncio.to_thread(
+                bedrock.invoke_claude, system, messages, max_tokens=max_tokens, temperature=temperature
+            )
         except ClientError:
             _log_llm_call("call_text", model, int((time.monotonic() - started) * 1000), ok=False)
             raise
@@ -99,13 +106,14 @@ async def call_json(
     messages: list[dict],
     *,
     max_tokens: int = 512,
+    temperature: float = 0.2,
 ) -> dict:
     model = get_settings().bedrock_model_id
     async with _semaphore:
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(
-                bedrock.invoke_claude_json, system, messages, max_tokens=max_tokens
+                bedrock.invoke_claude_json, system, messages, max_tokens=max_tokens, temperature=temperature
             )
         except (ClientError, ValueError):
             _log_llm_call("call_json", model, int((time.monotonic() - started) * 1000), ok=False)

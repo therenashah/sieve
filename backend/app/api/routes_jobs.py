@@ -9,9 +9,18 @@ from app import storage, tracker
 from app.auth import require_auth
 from app.config import get_settings
 from app.conversations import engine
-from app.db import get_db
-from app.models import Criterion, FilterParseRequest, FilterSet, Rubric, RubricChatRequest, TriggerScreeningResponse
-from app.pipeline import filters, parser, ranker, rubric, scorer
+from app.db import DEFAULT_HR_QUESTIONS, get_db
+from app.models import (
+    AddQuestionRequest,
+    Criterion,
+    FilterParseRequest,
+    FilterSet,
+    Rubric,
+    RubricChatRequest,
+    TriggerScreeningRequest,
+    TriggerScreeningResponse,
+)
+from app.pipeline import filters, hr_questions, parser, ranker, rubric, scorer
 
 _CANDIDATE_STATUSES = ["PARSING", "SCORING", "SCORED", "ERROR"]
 
@@ -59,8 +68,14 @@ async def create_job(title: str = Form(...), description: str = Form("")):
 
     with get_db() as conn:
         cur = conn.execute("INSERT INTO jobs (title, description) VALUES (?, ?)", (title, description.strip()))
-        conn.commit()
         job_id = cur.lastrowid
+        for index, question in enumerate(DEFAULT_HR_QUESTIONS):
+            conn.execute(
+                """INSERT INTO job_questions (job_id, question_text, order_index, is_mandatory, source)
+                   VALUES (?, ?, ?, 1, 'default')""",
+                (job_id, question, index),
+            )
+        conn.commit()
 
     storage.job_dir(job_id)  # create the storage folder immediately, before any upload happens
     return _get_job_or_404(job_id)
@@ -98,6 +113,7 @@ async def upload_jd(job_id: int, background_tasks: BackgroundTasks, file: Upload
         conn.commit()
 
     background_tasks.add_task(rubric.generate_and_apply_rubric, job_id, jd_text)
+    background_tasks.add_task(hr_questions.generate_and_apply_hr_questions, job_id, jd_text)
 
     return {"jd_filename": filename}
 
@@ -259,6 +275,79 @@ async def get_rubric(job_id: int, version: int | None = None):
     return {"version": row["version"], "criteria": json.loads(row["criteria_json"])}
 
 
+@router.get("/{job_id}/questions")
+async def list_questions(job_id: int):
+    """The HR screening question pool for this job: generic defaults + JD-derived AI
+    suggestions (generated in the background after JD upload) + anything the recruiter
+    has added. This is what the trigger-screening modal shows for the recruiter to pick from.
+    """
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_questions WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@router.post("/{job_id}/questions/generate")
+async def generate_questions(job_id: int):
+    """On-demand (synchronous) AI question generation from the job's stored JD text.
+
+    Exists mainly for jobs whose JD was uploaded before AI-generated questions were
+    wired into the JD-upload flow (or if that background task silently failed) — this
+    lets the recruiter (re)generate from the trigger-screening modal without re-uploading
+    the JD. Returns the full, refreshed question pool.
+    """
+    job = _get_job_or_404(job_id)
+    jd_text = (job.get("jd_text") or "").strip()
+    if not jd_text:
+        raise HTTPException(status_code=400, detail="Upload a job description before generating questions")
+
+    try:
+        questions = await hr_questions.generate_hr_questions(jd_text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Couldn't generate questions: {exc}") from exc
+
+    hr_questions.add_questions(job_id, questions, source="ai")
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_questions WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+@router.post("/{job_id}/questions", status_code=201)
+async def add_question(job_id: int, body: AddQuestionRequest):
+    _get_job_or_404(job_id)
+    text = body.question_text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Question text is required")
+
+    with get_db() as conn:
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(order_index), -1) AS m FROM job_questions WHERE job_id = ?", (job_id,)
+        ).fetchone()["m"]
+        cur = conn.execute(
+            """INSERT INTO job_questions (job_id, question_text, order_index, is_mandatory, source)
+               VALUES (?, ?, ?, 1, 'custom')""",
+            (job_id, text, max_order + 1),
+        )
+        conn.commit()
+        question_id = cur.lastrowid
+        row = conn.execute("SELECT * FROM job_questions WHERE id = ?", (question_id,)).fetchone()
+    return dict(row)
+
+
+@router.delete("/{job_id}/questions/{question_id}", status_code=204)
+async def delete_question(job_id: int, question_id: int):
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        conn.execute("DELETE FROM job_questions WHERE id = ? AND job_id = ?", (question_id, job_id))
+        conn.commit()
+    return None
+
+
 @router.post("/{job_id}/rubric/apply")
 async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: BackgroundTasks):
     """Persist a proposed rubric (manual HR edits, or a fine-tune chat proposal) as the
@@ -366,6 +455,59 @@ def _get_candidate_or_404(job_id: int, candidate_id: int) -> dict:
     return dict(row)
 
 
+_ROUNDS = ["resume_screening", "hr_screening", "l1", "l2", "l3", "pre_offer"]
+
+
+@router.get("/{job_id}/candidates/{candidate_id}")
+async def get_candidate_detail(job_id: int, candidate_id: int):
+    """Full candidate detail for the candidate page: profile + one card per pipeline
+    round. Rounds with no result yet (e.g. resume_screening until that pipeline's scorer
+    output is copied over, or any round not yet run for this candidate) come back as
+    null — the frontend renders those as empty/placeholder cards rather than omitting them.
+    """
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        cand_row = conn.execute(
+            "SELECT * FROM candidates WHERE id = ? AND job_id = ?", (candidate_id, job_id)
+        ).fetchone()
+        if not cand_row:
+            raise HTTPException(status_code=404, detail=f"Candidate {candidate_id} not found")
+
+        round_rows = conn.execute(
+            "SELECT * FROM round_results WHERE candidate_id = ?", (candidate_id,)
+        ).fetchall()
+        session_rows = conn.execute(
+            """SELECT id, token, status, phase, created_at, expires_at, completed_at, summary, key_highlights
+               FROM screening_sessions WHERE job_id = ? AND candidate_id = ? ORDER BY id DESC""",
+            (job_id, candidate_id),
+        ).fetchall()
+
+    rounds = {name: None for name in _ROUNDS}
+    for row in round_rows:
+        rounds[row["round"]] = {
+            "score": row["score"],
+            "summary": row["summary"],
+            "key_highlights": json.loads(row["key_highlights_json"]) if row["key_highlights_json"] else [],
+            "flags": json.loads(row["flags_json"]) if row["flags_json"] else [],
+            "updated_at": row["updated_at"],
+        }
+
+    sessions = []
+    for row in session_rows:
+        session = dict(row)
+        if session["key_highlights"]:
+            session["key_highlights"] = json.loads(session["key_highlights"])
+        sessions.append(session)
+
+    candidate = dict(cand_row)
+    candidate["profile"] = json.loads(candidate.pop("profile_json"))
+    screening_result_json = candidate.pop("screening_result_json")
+    candidate["screening_result"] = json.loads(screening_result_json) if screening_result_json else None
+    candidate["rounds"] = rounds
+    candidate["screening_sessions"] = sessions
+    return candidate
+
+
 @router.post("/{job_id}/candidates/{candidate_id}/reject")
 async def reject_candidate(job_id: int, candidate_id: int):
     """Mark a candidate rejected. Reversible (see /unreject) — the candidate stays in the
@@ -394,14 +536,20 @@ async def unreject_candidate(job_id: int, candidate_id: int):
 
 
 @router.post("/{job_id}/candidates/{candidate_id}/screening-link", response_model=TriggerScreeningResponse)
-async def trigger_screening(job_id: int, candidate_id: int):
+async def trigger_screening(job_id: int, candidate_id: int, body: TriggerScreeningRequest | None = None):
     """HR action: create a tokenized, time-limited screening chat link for a candidate.
+
+    `body.question_ids` is the recruiter's confirmed selection from the trigger modal
+    (defaults + AI-recommended + any custom questions) — the chat asks exactly these,
+    in order, before moving to profile-based follow-ups. Omitting it (or an empty list)
+    falls back to every mandatory question on the job.
 
     Blocked for candidates the resume-screening pipeline rejected at the
     mandatory gate — see `engine.ScreeningGateError`.
     """
+    question_ids = body.question_ids if body else []
     try:
-        session = engine.create_session(job_id, candidate_id)
+        session = engine.create_session(job_id, candidate_id, selected_question_ids=question_ids)
     except engine.SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except engine.ScreeningGateError as exc:
@@ -429,3 +577,23 @@ async def list_screening_sessions(job_id: int, candidate_id: int):
             session["key_highlights"] = json.loads(session["key_highlights"])
         sessions.append(session)
     return sessions
+
+
+@router.get("/{job_id}/candidates/{candidate_id}/screening-sessions/{session_id}/answers")
+async def get_screening_session_answers(job_id: int, candidate_id: int, session_id: int):
+    """The exact question/answer pairs captured for one screening session — this is the
+    recruiter-facing proof/evidence trail (question asked, exact candidate answer), as
+    opposed to the full chat transcript which also includes small talk/acknowledgments."""
+    with get_db() as conn:
+        session_row = conn.execute(
+            "SELECT id FROM screening_sessions WHERE id = ? AND job_id = ? AND candidate_id = ?",
+            (session_id, job_id, candidate_id),
+        ).fetchone()
+        if not session_row:
+            raise HTTPException(status_code=404, detail="Screening session not found")
+        rows = conn.execute(
+            """SELECT question_text, question_type, answer_text, created_at
+               FROM screening_answers WHERE session_id = ? ORDER BY id ASC""",
+            (session_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]

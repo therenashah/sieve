@@ -156,10 +156,18 @@ class LoginResponse(BaseModel):
     expires_at: str
 
 
+class TriggerScreeningRequest(BaseModel):
+    question_ids: list[int] = Field(default_factory=list)
+
+
 class TriggerScreeningResponse(BaseModel):
     token: str
     chat_url: str
     expires_at: str
+
+
+class AddQuestionRequest(BaseModel):
+    question_text: str
 
 
 class ChatMessage(BaseModel):

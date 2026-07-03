@@ -73,13 +73,14 @@ def invoke_claude_json(
     *,
     max_tokens: int = 512,
     max_retries: int = 2,
+    temperature: float | None = None,
 ) -> dict:
     """Same as invoke_claude, but parses the reply as JSON, retrying on malformed output."""
     working_messages = list(messages)
     last_error: Exception | None = None
 
     for attempt in range(max_retries + 1):
-        text = invoke_claude(system, working_messages, max_tokens=max_tokens)
+        text = invoke_claude(system, working_messages, max_tokens=max_tokens, temperature=temperature)
         try:
             return json.loads(_strip_json_fence(text))
         except json.JSONDecodeError as exc:
