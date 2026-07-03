@@ -5,10 +5,10 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=${APP_ENV:-development}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
-      - DATABASE_PATH=/app/db/app.db
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - DATABASE_PATH=/app/db/sieve.db
       - SCREENING_LINK_TTL_MINUTES=${SCREENING_LINK_TTL_MINUTES:-15}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     volumes:

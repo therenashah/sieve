@@ -11,12 +11,17 @@ class Settings(BaseSettings):
     app_env: str = "development"
 
     # LLM providers
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = ""  # unused now that client.py calls Claude via Bedrock; kept for local-dev fallback
     openai_api_key: str = ""
     llm_provider: str = "anthropic"
+    llm_model: str = "anthropic.claude-haiku-4-5-20251001-v1:0"  # Bedrock model ID
+
+    # AWS Bedrock — auth resolves via boto3's default credential chain
+    # (EC2 instance role on the deployment box; no access key needed there)
+    aws_region: str = "us-east-1"
 
     # storage
-    database_path: str = "./db/app.db"
+    database_path: str = "./db/sieve.db"
 
     # candidate auth
     screening_link_ttl_minutes: int = 15
