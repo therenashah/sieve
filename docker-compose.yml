@@ -5,14 +5,25 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=${APP_ENV:-development}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_REGION=${AWS_REGION:-ap-south-1}
+      - BEDROCK_MODEL_ID=${BEDROCK_MODEL_ID:-us.anthropic.claude-haiku-4-5-20251001-v1:0}
       - DATABASE_PATH=/app/db/app.db
+      - JOBS_STORAGE_DIR=/app/data/jobs
+      - RECRUITER_EMAIL=${RECRUITER_EMAIL:-recruiter@seclore.com}
+      - RECRUITER_PASSWORD=${RECRUITER_PASSWORD:-seclore123}
       - SCREENING_LINK_TTL_MINUTES=${SCREENING_LINK_TTL_MINUTES:-15}
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://localhost:3000}
+      - MAX_PROFILE_FOLLOWUPS=${MAX_PROFILE_FOLLOWUPS:-2}
+      - MAX_SECLORE_QA_TURNS=${MAX_SECLORE_QA_TURNS:-5}
+      - KNOWLEDGE_BASE_DIR=/app/data/knowledge_base
+      - RAG_TOP_K=${RAG_TOP_K:-3}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     volumes:
       - ./backend/app:/app/app
+      - ./backend/scripts:/app/scripts
       - ./backend/db:/app/db
       - ./data:/app/data
     restart: unless-stopped
