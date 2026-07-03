@@ -9,6 +9,7 @@ from app import storage, tracker
 from app.auth import require_auth
 from app.config import get_settings
 from app.conversations import engine
+from app.conversations import interview as interview_engine
 from app.db import BUILTIN_ROUNDS, DEFAULT_HR_QUESTIONS, ROUND_TEMPLATES, get_db
 from app.models import (
     AddQuestionRequest,
@@ -19,6 +20,8 @@ from app.models import (
     RoundAIConfig,
     Rubric,
     RubricChatRequest,
+    TriggerInterviewRequest,
+    TriggerInterviewResponse,
     TriggerScreeningRequest,
     TriggerScreeningResponse,
     UpdateRoundRequest,
@@ -842,3 +845,105 @@ async def get_screening_session_answers(job_id: int, candidate_id: int, session_
             (session_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# AI interview round (recruiter side)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{job_id}/candidates/{candidate_id}/interview-link", response_model=TriggerInterviewResponse)
+async def trigger_interview(job_id: int, candidate_id: int, body: TriggerInterviewRequest):
+    """Create a tokenized invite link for a candidate to schedule + take an AI interview
+    round. Same copy-paste-the-link model as the HR screening link — nothing is sent
+    anywhere. `body.round_key` selects which AI-based round on the job this is for.
+
+    Blocked for candidates the resume-screening pipeline rejected at the mandatory gate.
+    """
+    try:
+        session = interview_engine.create_session(job_id, candidate_id, body.round_key)
+    except interview_engine.SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except interview_engine.InterviewStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except interview_engine.InterviewGateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    settings = get_settings()
+    interview_url = f"{settings.frontend_base_url}/interview/{session['token']}"
+    return TriggerInterviewResponse(
+        token=session["token"], interview_url=interview_url, expires_at=session["expires_at"]
+    )
+
+
+@router.get("/{job_id}/candidates/{candidate_id}/interview-sessions")
+async def list_interview_sessions(job_id: int, candidate_id: int, round_key: str | None = Query(default=None)):
+    """Every AI interview session for this candidate (optionally filtered to one round),
+    with score/summary once completed — what the recruiter round page + candidate page show."""
+    query = (
+        """SELECT id, token, round_key, status, phase, duration_minutes, scheduled_at, created_at,
+                  expires_at, started_at, completed_at, recording_path, summary, score
+           FROM interview_sessions WHERE job_id = ? AND candidate_id = ?"""
+    )
+    params: list = [job_id, candidate_id]
+    if round_key:
+        query += " AND round_key = ?"
+        params.append(round_key)
+    query += " ORDER BY id DESC"
+    with get_db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+@router.get("/{job_id}/candidates/{candidate_id}/interview-sessions/{session_id}")
+async def get_interview_session_detail(job_id: int, candidate_id: int, session_id: int):
+    """Full detail of one interview session: transcript, scorecard, proctoring events,
+    and whether a recording is on file."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM interview_sessions WHERE id = ? AND job_id = ? AND candidate_id = ?",
+            (session_id, job_id, candidate_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Interview session not found")
+    session = dict(row)
+    transcript = interview_engine.get_transcript(session_id)
+    events = interview_engine.get_events(session_id)
+    scorecard = json.loads(session["scorecard_json"]) if session["scorecard_json"] else None
+    plan = json.loads(session["plan_json"]) if session["plan_json"] else None
+    return {
+        "id": session["id"],
+        "round_key": session["round_key"],
+        "status": session["status"],
+        "phase": session["phase"],
+        "duration_minutes": session["duration_minutes"],
+        "scheduled_at": session["scheduled_at"],
+        "created_at": session["created_at"],
+        "started_at": session["started_at"],
+        "completed_at": session["completed_at"],
+        "score": session["score"],
+        "summary": session["summary"],
+        "scorecard": scorecard,
+        "plan": plan,
+        "has_recording": bool(session["recording_path"]),
+        "transcript": transcript,
+        "events": events,
+    }
+
+
+@router.get("/{job_id}/candidates/{candidate_id}/interview-sessions/{session_id}/recording")
+async def get_interview_recording(job_id: int, candidate_id: int, session_id: int):
+    """Stream the stored interview recording (if the round had recording enabled)."""
+    from fastapi.responses import FileResponse
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT recording_path FROM interview_sessions WHERE id = ? AND job_id = ? AND candidate_id = ?",
+            (session_id, job_id, candidate_id),
+        ).fetchone()
+    if not row or not row["recording_path"]:
+        raise HTTPException(status_code=404, detail="No recording on file for this interview")
+    path = storage.candidates_dir(job_id) / row["recording_path"]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Recording file is missing")
+    return FileResponse(path, media_type="video/webm", filename=row["recording_path"])

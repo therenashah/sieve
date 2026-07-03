@@ -3,7 +3,7 @@ import logging
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import routes_auth, routes_chat, routes_jobs
+from app.api import routes_auth, routes_chat, routes_interview, routes_jobs
 from app.auth import require_auth
 from app.config import get_settings
 from app.db import get_db, init_db
@@ -26,6 +26,7 @@ app.add_middleware(
 app.include_router(routes_auth.router)
 app.include_router(routes_jobs.router)
 app.include_router(routes_chat.router)
+app.include_router(routes_interview.router)
 
 
 @app.on_event("startup")

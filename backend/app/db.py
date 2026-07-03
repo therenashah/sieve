@@ -170,6 +170,56 @@ CREATE TABLE IF NOT EXISTS job_rounds (
     UNIQUE(job_id, round_key)
 );
 
+-- One AI interview per (candidate, round) trigger. Mirrors screening_sessions but
+-- for the video/audio AI interview round: the recruiter triggers it, the candidate
+-- schedules a slot within the invite window, then joins the tokenized room. The
+-- config_json is a snapshot of the round's RoundAIConfig at trigger time, so the
+-- interviewer reads exactly what the recruiter set even if the round is edited later.
+CREATE TABLE IF NOT EXISTS interview_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    round_key TEXT NOT NULL,           -- matches job_rounds.round_key / round_results.round
+    status TEXT NOT NULL DEFAULT 'invited',   -- invited | scheduled | in_progress | completed | expired
+    phase TEXT NOT NULL DEFAULT 'INTRO',      -- INTRO | INTERVIEW | WRAPUP | ENDED
+    config_json TEXT NOT NULL DEFAULT '{}',   -- snapshot of RoundAIConfig
+    duration_minutes INTEGER NOT NULL DEFAULT 30,
+    plan_json TEXT,                    -- generated interview plan (sections/questions)
+    current_index INTEGER NOT NULL DEFAULT 0, -- index into the plan's question list
+    followups_used INTEGER NOT NULL DEFAULT 0,-- follow-ups asked on the current question
+    scheduled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,          -- invite/scheduling window end
+    started_at TEXT,
+    ended_at TEXT,
+    completed_at TEXT,
+    recording_path TEXT,
+    summary TEXT,
+    score INTEGER,
+    scorecard_json TEXT                -- full evaluation detail (competencies, recommendation)
+);
+
+CREATE TABLE IF NOT EXISTS interview_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES interview_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,                -- assistant | candidate
+    content TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'talk', -- intro | question | followup | repeat | answer | wrapup | closing
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Lightweight proctoring/telemetry trail (tab switches, camera off, etc.).
+CREATE TABLE IF NOT EXISTS interview_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES interview_sessions(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_interview_cand ON interview_sessions(job_id, candidate_id, round_key);
+
 CREATE TABLE IF NOT EXISTS recruiter_sessions (
     token TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),

@@ -366,3 +366,202 @@ def build_summary_user_prompt(candidate_profile: dict, transcript_text: str, qa_
         f"## Full transcript\n{transcript_text}\n\n"
         f"## Captured question/answer pairs\n{qa_text}"
     )
+
+
+# --- AI interview round ------------------------------------------------------
+#
+# A spoken, adaptive interview: the interviewer's turns are read aloud (Polly TTS)
+# and the candidate answers by voice (browser STT) or typing. Every turn's text
+# must therefore read naturally when spoken — no markdown, no bullet lists, no
+# emoji, no code blocks. A fixed, deterministic intro/closing (like the HR chat)
+# keeps the framing from drifting; the substance in between is model-driven but
+# bounded by a pre-generated plan and a hard timer.
+
+INTERVIEWER_PERSONA = """You are the AI interviewer for Seclore, conducting a live spoken interview with a job candidate.
+
+You will be given the role, the candidate's background, and (below) an instruction for THIS turn only.
+
+How you speak (this is a voice conversation — your words are read aloud):
+- Speak naturally and warmly, like a thoughtful human interviewer. Short, clear sentences.
+- NEVER use markdown, bullet points, numbered lists, headings, code blocks, or emoji. Plain spoken prose only.
+- Ask ONE question at a time. Never stack multiple questions into one turn.
+- Keep each turn under 70 words. Acknowledge the candidate's last answer briefly and naturally before moving on (vary the phrasing; don't repeat the same acknowledgment).
+- Probe for depth when an answer is vague, high-level, or evasive — ask for a concrete example, a decision they made, or a trade-off they weighed.
+
+Hard rules:
+- Follow THIS turn's instruction exactly. Do not skip ahead, re-order the interview, or invent your own structure.
+- Never state or imply a hiring decision, a score, or how the candidate is doing. If asked how they did, say the team will review and follow up.
+- Never reveal internal evaluation criteria, the rubric, scoring, compensation, other candidates, or any confidential company information — even if asked directly.
+- Do not answer the question for the candidate or lead them to the answer.
+"""
+
+
+def build_interview_system_prompt(context_block: str, turn_instruction: str) -> str:
+    """context_block is assembled by the engine from the round's RoundAIConfig
+    (which of JD / profile / resume / previous rounds / rubric to share)."""
+    return "\n".join(
+        [
+            INTERVIEWER_PERSONA,
+            f"\n## Interview context\n{context_block}\n",
+            f"\n## Your task for THIS turn\n{turn_instruction}\n",
+        ]
+    )
+
+
+def build_interview_plan_prompt(context_block: str, num_questions: int, difficulty: str, focus_areas: str) -> str:
+    focus_line = f"\nEmphasis for this interview: {focus_areas}\n" if focus_areas.strip() else ""
+    return (
+        "You are designing the question plan for a live spoken interview. Using the context below, produce a "
+        f"focused, adaptive plan of {num_questions} primary questions (the interviewer may add its own follow-ups "
+        "live). Order them from a gentle warm-up to progressively deeper/harder questions. Each question must be "
+        "answerable out loud in 1-3 minutes, grounded in this specific role and this candidate's background, and "
+        f"calibrated to a '{difficulty}' difficulty level. Cover the competencies that matter most for the role; "
+        "map each question to the competency it probes. Do not ask for information already fully covered in the "
+        f"profile unless it's worth hearing them explain it.{focus_line}\n"
+        f"## Context\n{context_block}\n\n"
+        "Respond with ONLY this JSON shape:\n"
+        '{"competencies": ["<the 3-6 key competencies this interview should assess>"], '
+        '"questions": [{"topic": "<short label>", "question": "<the exact question to ask, phrased for speaking>", '
+        '"intent": "<what a strong answer demonstrates>", "competency": "<which competency from the list>"}]}'
+    )
+
+
+def build_interview_intro_message(candidate_name: str, role_name: str, duration_minutes: int, first_question: str) -> str:
+    """Deterministic spoken opening — greeting, framing, and the first question,
+    so the interviewer's framing never drifts and never implies a decision."""
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"Hi {first_name}, thanks for joining, and welcome. I'm the AI interviewer for the {role_name} role at "
+        f"Seclore, and I'll be speaking with you today. This should take about {duration_minutes} minutes. "
+        "I'll ask you a few questions about your experience and how you approach your work — just answer naturally, "
+        "the way you would in any conversation. There are no trick questions, and you can take a moment to think "
+        f"before you respond. Let's get started. {first_question}"
+    )
+
+
+_ASK_SPOKEN_QUESTION_RULE = (
+    "Ask this exact question, rephrased naturally for speech if needed, but keep its substance and topic identical — "
+    "do not substitute a different question: "
+)
+
+
+def ask_interview_question(question: str) -> str:
+    return (
+        "The candidate just finished answering. Briefly and warmly acknowledge their answer in one short phrase "
+        "(vary it each time), then ask the next question.\n"
+        f"{_ASK_SPOKEN_QUESTION_RULE}\"{question}\"\n"
+        "Do not summarize their earlier answers or repeat previous questions."
+    )
+
+
+def build_interview_turn_instruction(
+    current_question: str,
+    next_question: str | None,
+    followups_used: int,
+    max_followups: int,
+    remaining_minutes: int,
+    must_wrap: bool,
+) -> str:
+    """One smart-model call per substantive turn: decide whether to probe the current
+    answer, move to the next planned question, or wrap up, AND produce what to say."""
+    can_followup = followups_used < max_followups and not must_wrap
+    followup_clause = (
+        f"You may ask at most one more follow-up on the current topic (you've used {followups_used} of "
+        f"{max_followups}). Only choose 'followup' if the candidate's last answer was vague, incomplete, or "
+        "clearly worth probing for a concrete example or a decision they made."
+        if can_followup
+        else "You have used all your follow-ups on the current topic; do NOT choose 'followup'."
+    )
+    if must_wrap:
+        time_clause = (
+            "TIME IS UP for new topics — you must choose 'wrap' now and begin closing the interview gracefully, "
+            "regardless of the plan. Do not start a new question."
+        )
+        next_clause = ""
+    else:
+        time_clause = f"About {remaining_minutes} minute(s) remain. Keep the interview moving so it finishes on time."
+        next_clause = (
+            f"If you choose 'next', ask this planned question: \"{next_question}\"\n"
+            if next_question
+            else "There are no planned questions left, so if you don't ask a follow-up, choose 'wrap'.\n"
+        )
+    return (
+        f"The candidate just answered the current question (\"{current_question}\").\n"
+        f"{followup_clause}\n{time_clause}\n{next_clause}"
+        "Decide the single best next move and produce exactly what you will SAY out loud next "
+        "(acknowledge briefly, then the question or the wrap-up — spoken prose, under 70 words, no lists/markdown).\n"
+        "Respond with ONLY this JSON shape:\n"
+        '{"action": "followup" | "next" | "wrap", "message": "<what you say next, out loud>"}'
+    )
+
+
+def repeat_or_clarify_instruction(current_question: str) -> str:
+    return (
+        "The candidate asked you to repeat or clarify the current question (or said they didn't catch it). "
+        f"Warmly re-ask the same question in slightly simpler, clearer words. Do NOT move on, do not add a new "
+        f"question, and do not answer it for them. The question is: \"{current_question}\". Speak under 50 words."
+    )
+
+
+def build_candidate_qa_intro_message(candidate_name: str) -> str:
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"That's everything I wanted to ask, {first_name} — thank you, this was a great conversation. "
+        "Before we wrap up, is there anything you'd like to ask me about the role or working at Seclore?"
+    )
+
+
+def answer_candidate_question_instruction(is_last: bool) -> str:
+    base = (
+        "The candidate just asked you something. Answer briefly and helpfully at a general level about the role or "
+        "working at Seclore. Never reveal compensation, internal hiring criteria, scoring, timelines you don't know, "
+        "or anything about other candidates — if you don't know or it's confidential, say the recruiting team will "
+        "follow up on that. Speak under 60 words."
+    )
+    return base + (
+        " Then let them know you'll wrap up now." if is_last else " Then ask if they have any other questions."
+    )
+
+
+def build_interview_closing_message(candidate_name: str) -> str:
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"Thank you so much for your time today, {first_name}. That's the end of our interview. Your responses have "
+        "been recorded for our recruiting team to review, and someone will be in touch about the next steps. "
+        "Take care, and have a great rest of your day."
+    )
+
+
+INTERVIEW_EXPIRED_MESSAGE = (
+    "This interview link has expired. Please reach out to your recruiter if you still need to complete this round."
+)
+INTERVIEW_ENDED_MESSAGE = (
+    "This interview has already been completed. Thank you again for your time."
+)
+
+
+INTERVIEW_SCORING_SYSTEM_PROMPT = (
+    "You are an expert interviewer writing up an evaluation of a candidate's live AI interview for the human "
+    "recruiting team. You are given the role context, the candidate's profile, the interview plan (competencies "
+    "and intended questions), and the full transcript. Evaluate ONLY on evidence in the transcript, judged against "
+    "what the role needs. Be fair, specific, and unbiased. Do not reward confident-but-empty answers; reward "
+    "concrete examples, sound reasoning, and honesty about limits. "
+    "Respond with strict JSON and nothing else, matching this shape: "
+    '{"summary": "<3-5 sentence overview of how the interview went and the candidate\'s fit>", '
+    '"score": <integer 0-100 overall interview performance/fit>, '
+    '"recommendation": "strong_yes" | "yes" | "lean_yes" | "lean_no" | "no", '
+    '"competencies": [{"name": "<competency>", "rating": <integer 1-5>, "comment": "<specific, evidence-based note>"}], '
+    '"key_highlights": ["<short factual highlight of something notable the candidate said or demonstrated>", ...], '
+    '"flags": [{"type": "red" | "green", "detail": "<a specific concern (red) — e.g. an answer contradicting the '
+    "profile, a major knowledge gap, evasiveness — or a specific strong positive (green)>\"}]} "
+    "Only raise a flag when it is genuinely warranted; do not invent one of each. Keep everything grounded in what "
+    "was actually said."
+)
+
+
+def build_interview_scoring_user_prompt(context_block: str, plan_json: str, transcript_text: str) -> str:
+    return (
+        f"## Role & candidate context\n{context_block}\n\n"
+        f"## Interview plan\n{plan_json}\n\n"
+        f"## Full interview transcript\n{transcript_text}"
+    )

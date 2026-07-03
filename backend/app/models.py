@@ -147,19 +147,34 @@ class RubricChatRequest(BaseModel):
 
 
 class RoundAIConfig(BaseModel):
-    """What a future AI interviewer bot for this round would be given/asked to do.
-    Stored as-is (not just UI decoration) so that bot can read it directly later."""
+    """What the AI interviewer bot for this round is given/asked to do. Stored as-is
+    (not just UI decoration) — the interview engine reads this directly to decide what
+    context to share, how long to run, how to behave, and what to produce afterward."""
 
+    # What context to share with the interviewer
     share_jd: bool = True
     share_profile: bool = True
     share_resume: bool = True
     share_previous_rounds: bool = True
     share_rubric: bool = True
     instructions: str = ""
+
+    # How the interview runs
+    duration_minutes: int = 30           # approximate target length; drives the timer + wrap-up
+    difficulty: Literal["easy", "balanced", "hard"] = "balanced"
+    focus_areas: str = ""                # optional free-text emphasis ("system design, ownership")
+    allow_candidate_questions: bool = True  # brief candidate Q&A before wrapping up
+
+    # Outcome & evaluation
     store_transcript: bool = True
-    store_recording: bool = False
+    store_recording: bool = False        # candidate video/audio recorded via the browser for proctoring
     generate_scorecard: bool = True
     flag_inconsistencies: bool = True
+
+    @field_validator("duration_minutes")
+    @classmethod
+    def _clamp_duration(cls, v: int) -> int:
+        return max(5, min(90, v))
 
 
 class AddRoundRequest(BaseModel):
@@ -220,3 +235,60 @@ class SessionStatusResponse(BaseModel):
     candidate_name: str
     job_title: str
     messages: list[ChatMessage]
+
+
+# --- AI interview round ------------------------------------------------------
+
+
+class TriggerInterviewRequest(BaseModel):
+    round_key: str  # which AI-based round on the job this interview is for
+
+
+class TriggerInterviewResponse(BaseModel):
+    token: str
+    interview_url: str
+    expires_at: str
+
+
+class ScheduleInterviewRequest(BaseModel):
+    slot: str  # ISO datetime chosen from the offered slots
+
+
+class InterviewMessageRequest(BaseModel):
+    message: str
+
+
+class ProctorEventRequest(BaseModel):
+    type: str          # e.g. "tab_hidden" | "tab_visible" | "camera_off" | "no_face"
+    detail: str = ""
+
+
+class InterviewTurnMessage(BaseModel):
+    role: str          # assistant | candidate
+    content: str
+    audio_b64: str | None = None  # base64 mp3 of the assistant turn (None -> browser TTS)
+
+
+class InterviewTurnResponse(BaseModel):
+    status: str        # invited | scheduled | in_progress | completed | expired
+    phase: str         # INTRO | INTERVIEW | WRAPUP | ENDED
+    messages: list[InterviewTurnMessage]
+    remaining_seconds: int | None = None   # until the hard stop, once started
+    should_wrap_up: bool = False
+
+
+class InterviewStatusResponse(BaseModel):
+    status: str
+    phase: str
+    candidate_name: str
+    job_title: str
+    round_name: str
+    instructions: str
+    duration_minutes: int
+    store_recording: bool
+    allow_candidate_questions: bool
+    scheduled_at: str | None = None
+    expires_at: str
+    slots: list[str] = Field(default_factory=list)          # offered scheduling slots (when unscheduled)
+    messages: list[InterviewTurnMessage] = Field(default_factory=list)  # transcript (when in progress)
+    remaining_seconds: int | None = None
