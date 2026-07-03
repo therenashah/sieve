@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from app.db import get_db
 from app.llm.client import PipelineLLMError, call_structured
-from app.llm.prompts import RUBRIC_PROMPT
+from app.llm.prompts import COPILOT_PROMPT, RUBRIC_PROMPT
 from app.models import ApplyResult, Criterion, Rubric, RubricDiff
 
 
@@ -35,7 +35,20 @@ async def generate_rubric(jd_text: str) -> Rubric:
 
 
 async def propose_update(current: Rubric, hr_prompt: str) -> Rubric:
-    raise NotImplementedError
+    """Ask the LLM to revise `current` per HR's free-text instruction.
+
+    Session-held only — this never touches the DB. The caller (routes_jobs.py) shows
+    HR the diff; nothing persists until apply_rubric() is called with the result.
+    """
+    prompt = COPILOT_PROMPT.format(
+        current_rubric_json=json.dumps([c.model_dump() for c in current.criteria]),
+        hr_prompt=hr_prompt,
+    )
+    draft = await call_structured(prompt, _RubricDraft, purpose="propose_rubric_update")
+    if not draft.criteria:
+        raise PipelineLLMError("proposed rubric would have zero criteria")
+
+    return Rubric(version=current.version + 1, criteria=draft.criteria)
 
 
 def diff(old: Rubric, new: Rubric) -> RubricDiff:

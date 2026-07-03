@@ -137,6 +137,15 @@ class ApplyResult(BaseModel):
     rescore_criterion_ids: list[str]  # added + edited_descriptions
 
 
+class FilterParseRequest(BaseModel):
+    text: str
+
+
+class RubricChatRequest(BaseModel):
+    message: str
+    proposed_rubric: Rubric | None = None  # a prior in-session proposal to keep iterating on
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str

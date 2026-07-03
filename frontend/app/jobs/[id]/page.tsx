@@ -26,7 +26,7 @@ function JobDetailInner() {
     Promise.all([getJob(jobId), listCandidates(jobId), getRubric(jobId)])
       .then(([j, c, r]) => {
         setJob(j);
-        setCandidates(c);
+        setCandidates(c.candidates);
         setRubric(r);
       })
       .catch((err) => {
@@ -70,7 +70,12 @@ function JobDetailInner() {
               <h1>{job.title}</h1>
               <p className="page-subtitle">{job.description || "No description provided."}</p>
             </div>
-            <span className={`badge badge-${job.status}`}>{job.status}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <button className="btn btn-primary" onClick={() => router.push(`/jobs/${jobId}/screening`)}>
+                Resume screening
+              </button>
+              <span className={`badge badge-${job.status}`}>{job.status}</span>
+            </div>
           </div>
         )}
 

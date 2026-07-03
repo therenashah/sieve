@@ -29,9 +29,99 @@ Respond with exactly this JSON shape:
 {{"criteria": [{{"id": "c1", "name": "...", "description": "...", "weight": 0.0}}, ...]}}
 """
 
-FITMENT_SCORING = ""
+PROFILE_PROMPT = """\
+Extract a structured candidate profile from the resume text below.
 
-NL_TO_FILTER = ""
+Rules:
+- If a field is not present in the resume, use null. Never infer or guess a value that isn't stated.
+- location: current city only, normalized (e.g. "Bombay" or "Navi Mumbai" -> "Mumbai"). Strip state/country. Use the candidate's current location, not a past one.
+- total_experience_years: compute from employment date ranges in the resume (sum actual worked periods; "present"/"current" means through today). Use null if it can't be computed from the dates given.
+- skills: lowercase, deduplicated, at most 30.
+- education: list of degree/institution strings (e.g. "B.Tech Computer Science, VJTI Mumbai"), as they appear in the resume.
+- current_company: the employer for the most recent/ongoing role. Null if not stated or the candidate is not currently employed.
+- notice_period: only if explicitly stated in the resume (rare) — most resumes won't state this; use null otherwise.
+
+Resume:
+{resume_text}
+
+Respond with exactly this JSON shape:
+{{"name": "...", "email": "...", "location": "...", "total_experience_years": 0.0, "skills": ["..."], "education": ["..."], "current_company": "...", "notice_period": "..."}}
+(use null for any field not found in the resume — not an empty string — and an empty array for skills/education only if genuinely none are found)
+"""
+
+SCORING_PROMPT = """\
+Score this candidate's resume against the following rubric criteria.
+
+Score demonstrated experience (roles, projects, outcomes) — not keyword presence. A skill that
+appears only in a skills list without supporting experience scores at most 3. Evidence must be a
+verbatim quote from the resume, or the exact string "not found" if there's no evidence at all.
+
+Criteria:
+{criteria_block}
+
+Resume:
+{resume_text}
+
+For EVERY criterion listed above, output exactly one score (0-10 integer), a verbatim evidence
+quote (or "not found"), and an optional short note. Respond with exactly this JSON shape:
+{{"scores": [{{"criterion_id": "c1", "score": 0, "evidence": "...", "note": "..."}}, ...]}}
+"""
+
+COPILOT_PROMPT = """\
+You are helping HR fine-tune a resume-screening rubric through conversation.
+
+Current rubric (JSON):
+{current_rubric_json}
+
+HR's instruction:
+{hr_prompt}
+
+Rules:
+- Preserve the "id" of every criterion that continues to exist, even if you rename it or
+  change its weight or description — ids must stay stable so past scores can be carried
+  forward correctly.
+- If HR asks to add a new criterion, give it the next unused id (e.g. if c1..c8 exist, use c9).
+- If HR asks to remove a criterion, simply omit it from your response.
+- Every description must still define what a score of 3, 6, and 9 out of 10 looks like for
+  that criterion.
+- Return the COMPLETE rubric (every criterion that should still exist after this change),
+  not just the ones that changed.
+- Re-normalize weights so they sum to approximately 1.0, unless HR explicitly asked for
+  specific weight values.
+
+Respond with exactly this JSON shape:
+{{"criteria": [{{"id": "c1", "name": "...", "description": "...", "weight": 0.0}}, ...]}}
+"""
+
+NL_FILTER_PROMPT = """\
+Translate the HR's natural-language filter request into structured filters.
+
+Allowed fields and operators:
+- location (eq, neq, contains) — city name
+- total_experience_years (eq, neq, gte, lte) — number of years
+- skills (contains) — a single skill, lowercase
+- education (contains) — substring match against education entries
+- current_company (eq, neq, contains)
+- status (eq, in) — one of: {statuses}
+- overall (eq, neq, gte, lte) — overall weighted score, 0.0 to 1.0
+- criterion_score (gte, lte, exists) — score or evidence-presence for one specific rubric
+  criterion (set criterion_id), or for op=exists you may omit criterion_id to mean "any
+  criterion in the rubric". gte/lte always require criterion_id.
+
+Rubric criteria (map a skill/requirement mentioned in HR's text to the matching criterion
+id when relevant):
+{criteria_block}
+
+HR's request:
+{text}
+
+Break the request into as many filters as needed (AND-combined). If part of the request
+can't be mapped to any of the above, put that exact fragment into "unparsed" instead of
+guessing a filter for it.
+
+Respond with exactly this JSON shape:
+{{"filters": [{{"field": "...", "op": "...", "value": ..., "criterion_id": "..." or null}}, ...], "unparsed": ["..."]}}
+"""
 
 TRANSCRIPT_ANALYSIS = ""
 

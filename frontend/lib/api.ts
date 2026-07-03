@@ -1,13 +1,18 @@
 import { getToken } from "./auth";
 import type {
-  Candidate,
+  ApplyRubricResult,
   ChatTurnResponse,
   CvUploadResult,
+  FilterSet,
   HealthResponse,
   Job,
+  RankedCandidatesResponse,
   Rubric,
+  RubricChatResponse,
+  ScanResponse,
   SessionStatusResponse,
   TrackerUploadResult,
+  TriggerScreeningResponse,
 } from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -110,8 +115,70 @@ export function uploadCvs(jobId: number | string, file: File): Promise<CvUploadR
   return authFetch(`/api/jobs/${jobId}/cvs`, { method: "POST", body: form });
 }
 
-export function listCandidates(jobId: number | string): Promise<Candidate[]> {
-  return authFetch<Candidate[]>(`/api/jobs/${jobId}/candidates`);
+// `filter` should be a JSON-stringified FilterSet (see filters/parse). Ranked/scored
+// against the given rubric `version`, or the latest one if omitted.
+export function listCandidates(
+  jobId: number | string,
+  options?: { filter?: string; version?: number },
+): Promise<RankedCandidatesResponse> {
+  const params = new URLSearchParams();
+  if (options?.filter) params.set("filter", options.filter);
+  if (options?.version) params.set("version", String(options.version));
+  const qs = params.toString();
+  return authFetch<RankedCandidatesResponse>(`/api/jobs/${jobId}/candidates${qs ? `?${qs}` : ""}`);
+}
+
+export function rejectCandidate(
+  jobId: number | string,
+  candidateId: number,
+): Promise<{ candidate_id: number; screening_decision: string | null }> {
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/reject`, { method: "POST" });
+}
+
+export function unrejectCandidate(
+  jobId: number | string,
+  candidateId: number,
+): Promise<{ candidate_id: number; screening_decision: string | null }> {
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/unreject`, { method: "POST" });
+}
+
+export function scanCandidates(jobId: number | string): Promise<ScanResponse> {
+  return authFetch(`/api/jobs/${jobId}/scan`, { method: "POST" });
+}
+
+export function applyRubric(jobId: number | string, proposed: Rubric): Promise<ApplyRubricResult> {
+  return authFetch(`/api/jobs/${jobId}/rubric/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(proposed),
+  });
+}
+
+export function rubricChat(
+  jobId: number | string,
+  message: string,
+  proposedRubric?: Rubric,
+): Promise<RubricChatResponse> {
+  return authFetch(`/api/jobs/${jobId}/rubric/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, proposed_rubric: proposedRubric ?? null }),
+  });
+}
+
+export function parseFilters(jobId: number | string, text: string): Promise<FilterSet> {
+  return authFetch(`/api/jobs/${jobId}/filters/parse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function triggerScreening(
+  jobId: number | string,
+  candidateId: number,
+): Promise<TriggerScreeningResponse> {
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/screening-link`, { method: "POST" });
 }
 
 export function getChatSession(token: string): Promise<SessionStatusResponse> {

@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS candidates (
     profile_json TEXT NOT NULL DEFAULT '{}',
     status TEXT DEFAULT 'PARSING',   -- PARSING | SCORING | SCORED | ERROR (resume-screening pipeline state)
     error_reason TEXT,
+    -- HR's resume-screening decision (distinct from the tracker-imported *_status columns
+    -- below, which get overwritten on every tracker re-sync). NULL | 'rejected'. Reversible.
+    screening_decision TEXT,
     -- Output of the resume-screening pipeline: mandatory gate result, fitment
     -- score, recommendation, strengths/gaps. NULL means not yet screened.
     screening_result_json TEXT,
@@ -191,6 +194,7 @@ _CANDIDATE_COLUMNS = {
     "l3_status": "TEXT",
     "pre_offer_status": "TEXT",
     "resume_path": "TEXT",
+    "screening_decision": "TEXT",
 }
 
 

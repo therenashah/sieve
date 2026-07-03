@@ -2,15 +2,29 @@
 
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import ValidationError
 
 from app import storage, tracker
 from app.auth import require_auth
 from app.config import get_settings
 from app.conversations import engine
 from app.db import get_db
-from app.models import TriggerScreeningResponse
-from app.pipeline import parser, rubric
+from app.models import Criterion, FilterParseRequest, FilterSet, Rubric, RubricChatRequest, TriggerScreeningResponse
+from app.pipeline import filters, parser, ranker, rubric, scorer
+
+_CANDIDATE_STATUSES = ["PARSING", "SCORING", "SCORED", "ERROR"]
+
+
+def _get_latest_rubric(job_id: int) -> Rubric | None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT version, criteria_json FROM rubrics WHERE job_id = ? ORDER BY version DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return Rubric(version=row["version"], criteria=[Criterion(**c) for c in json.loads(row["criteria_json"])])
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
 
@@ -162,6 +176,66 @@ async def upload_cvs(job_id: int, file: UploadFile = File(...)):
     return result
 
 
+@router.post("/{job_id}/scan")
+async def scan_candidates(job_id: int, background_tasks: BackgroundTasks):
+    """Kick off resume text extraction, profile extraction, and scoring (against the
+    latest rubric) for this job's candidates. Runs in the background; poll
+    GET /{job_id}/candidates for per-candidate status as it progresses."""
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        rubric_row = conn.execute(
+            "SELECT id FROM rubrics WHERE job_id = ? ORDER BY version DESC LIMIT 1", (job_id,)
+        ).fetchone()
+    if rubric_row is None:
+        raise HTTPException(status_code=400, detail="Generate a rubric before scanning candidates")
+
+    background_tasks.add_task(scorer.scan_and_score_pool, job_id, rubric_row["id"])
+    return {"status": "scanning", "rubric_id": rubric_row["id"]}
+
+
+@router.post("/{job_id}/filters/parse")
+async def parse_filters(job_id: int, payload: FilterParseRequest):
+    """Translate HR's free-text filter request into a FilterSet, using the job's current
+    rubric so criteria mentions ("strong kubernetes") map to the right criterion id. The
+    frontend renders the result as chips and passes it back into GET /{job_id}/candidates."""
+    _get_job_or_404(job_id)
+    active_rubric = _get_latest_rubric(job_id)
+    if active_rubric is None:
+        raise HTTPException(status_code=400, detail="Generate a rubric before filtering candidates")
+
+    return await filters.parse_nl(payload.text, active_rubric, _CANDIDATE_STATUSES)
+
+
+def _summarize_diff(changes) -> str:
+    parts = []
+    if changes.added:
+        parts.append(f"added {len(changes.added)} criteria: {', '.join(c.name for c in changes.added)}")
+    if changes.removed:
+        parts.append(f"removed {len(changes.removed)} criteria: {', '.join(changes.removed)}")
+    if changes.edited_descriptions:
+        parts.append(f"updated the description on {len(changes.edited_descriptions)} criteria")
+    if changes.weight_changes:
+        parts.append(f"reweighted {len(changes.weight_changes)} criteria")
+    if not parts:
+        return "I didn't make any changes to the rubric based on that."
+    return "I " + "; ".join(parts) + ". Review below, then apply if this looks right."
+
+
+@router.post("/{job_id}/rubric/chat")
+async def rubric_chat(job_id: int, payload: RubricChatRequest):
+    """Stateless rubric copilot turn: propose changes per HR's message, against either
+    the persisted rubric or a prior in-session proposal the client is still holding.
+    Nothing persists until POST /{job_id}/rubric/apply is called with the result."""
+    _get_job_or_404(job_id)
+    base_rubric = payload.proposed_rubric or _get_latest_rubric(job_id)
+    if base_rubric is None:
+        raise HTTPException(status_code=400, detail="Generate a rubric before using the copilot")
+
+    proposed = await rubric.propose_update(base_rubric, payload.message)
+    changes = rubric.diff(base_rubric, proposed)
+    return {"reply": _summarize_diff(changes), "proposed_rubric": proposed, "diff": changes}
+
+
 @router.get("/{job_id}/rubric")
 async def get_rubric(job_id: int, version: int | None = None):
     """Latest rubric for this job, or a specific version. 404 if none generated yet
@@ -185,22 +259,138 @@ async def get_rubric(job_id: int, version: int | None = None):
     return {"version": row["version"], "criteria": json.loads(row["criteria_json"])}
 
 
-@router.get("/{job_id}/candidates")
-async def list_candidates(job_id: int):
+@router.post("/{job_id}/rubric/apply")
+async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: BackgroundTasks):
+    """Persist a proposed rubric (manual HR edits, or a fine-tune chat proposal) as the
+    next version. If candidates were already scanned, kicks off a selective re-score in
+    the background for just the added/edited criteria — untouched criteria carry forward."""
     _get_job_or_404(job_id)
+    result = rubric.apply_rubric(job_id, proposed)
+
+    rescoring = False
+    if result.rescore_criterion_ids:
+        with get_db() as conn:
+            has_scored_candidates = (
+                conn.execute(
+                    "SELECT 1 FROM candidates WHERE job_id = ? AND resume_text IS NOT NULL LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+                is not None
+            )
+            new_rubric_row = conn.execute(
+                "SELECT id FROM rubrics WHERE job_id = ? AND version = ?", (job_id, result.new_version)
+            ).fetchone()
+        if has_scored_candidates and new_rubric_row:
+            rescoring = True
+            background_tasks.add_task(
+                scorer.score_pool, job_id, new_rubric_row["id"], result.rescore_criterion_ids
+            )
+
+    return {
+        "new_version": result.new_version,
+        "rescore_criterion_ids": result.rescore_criterion_ids,
+        "rescoring": rescoring,
+    }
+
+
+@router.get("/{job_id}/candidates")
+async def list_candidates(job_id: int, filter: str | None = Query(default=None), version: int | None = None):
+    """Candidates for this job, ranked against the rubric when one exists.
+
+    `filter` is a URL-encoded FilterSet JSON (see POST /{job_id}/filters/parse to build
+    one from natural language). Response shape: {rubric_version, candidates, unparsed}.
+    """
+    _get_job_or_404(job_id)
+
     with get_db() as conn:
+        if version is not None:
+            rubric_row = conn.execute(
+                "SELECT id, version FROM rubrics WHERE job_id = ? AND version = ?", (job_id, version)
+            ).fetchone()
+        else:
+            rubric_row = conn.execute(
+                "SELECT id, version FROM rubrics WHERE job_id = ? ORDER BY version DESC LIMIT 1", (job_id,)
+            ).fetchone()
+
         rows = conn.execute(
             "SELECT * FROM candidates WHERE job_id = ? ORDER BY match_score DESC, id ASC", (job_id,)
         ).fetchall()
 
-    candidates = []
+    base_by_id: dict[int, dict] = {}
+    order: list[int] = []
     for row in rows:
         candidate = dict(row)
         candidate["profile"] = json.loads(candidate.pop("profile_json"))
         screening_result_json = candidate.pop("screening_result_json")
         candidate["screening_result"] = json.loads(screening_result_json) if screening_result_json else None
-        candidates.append(candidate)
-    return candidates
+        base_by_id[candidate["id"]] = candidate
+        order.append(candidate["id"])
+
+    fs: FilterSet | None = None
+    unparsed: list[str] = []
+    if filter:
+        try:
+            fs = FilterSet.model_validate_json(filter)
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid filter: {exc}") from exc
+        unparsed = fs.unparsed
+
+    if rubric_row is None:
+        # No rubric yet -- nothing to rank/score-filter with. Non-rank filters (location,
+        # skills, etc.) still apply; overall/criterion_score filters are silently skipped.
+        ids = filters.execute(job_id, fs) if fs else order
+        id_set = set(ids)
+        candidates = [{**base_by_id[cid], "overall": None, "scores": []} for cid in order if cid in id_set]
+        return {"rubric_version": None, "candidates": candidates, "unparsed": unparsed}
+
+    candidate_ids = filters.execute(job_id, fs) if fs else None
+    ranked = ranker.rank(job_id, rubric_row["id"], candidate_ids)
+    if fs:
+        ranked = filters.apply_rank_filters(ranked, fs)
+
+    candidates = [
+        {**base_by_id[r["candidate_id"]], "overall": r["overall"], "scores": r["scores"]}
+        for r in ranked
+        if r["candidate_id"] in base_by_id
+    ]
+    return {"rubric_version": rubric_row["version"], "candidates": candidates, "unparsed": unparsed}
+
+
+def _get_candidate_or_404(job_id: int, candidate_id: int) -> dict:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id FROM candidates WHERE id = ? AND job_id = ?", (candidate_id, job_id)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Candidate {candidate_id} not found for job {job_id}")
+    return dict(row)
+
+
+@router.post("/{job_id}/candidates/{candidate_id}/reject")
+async def reject_candidate(job_id: int, candidate_id: int):
+    """Mark a candidate rejected. Reversible (see /unreject) — the candidate stays in the
+    pool and in candidate listings, just flagged, rather than being deleted or hidden."""
+    _get_candidate_or_404(job_id, candidate_id)
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE candidates SET screening_decision = 'rejected' WHERE id = ? AND job_id = ?",
+            (candidate_id, job_id),
+        )
+        conn.commit()
+    return {"candidate_id": candidate_id, "screening_decision": "rejected"}
+
+
+@router.post("/{job_id}/candidates/{candidate_id}/unreject")
+async def unreject_candidate(job_id: int, candidate_id: int):
+    """Undo a rejection."""
+    _get_candidate_or_404(job_id, candidate_id)
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE candidates SET screening_decision = NULL WHERE id = ? AND job_id = ?",
+            (candidate_id, job_id),
+        )
+        conn.commit()
+    return {"candidate_id": candidate_id, "screening_decision": None}
 
 
 @router.post("/{job_id}/candidates/{candidate_id}/screening-link", response_model=TriggerScreeningResponse)

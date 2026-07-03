@@ -49,12 +49,64 @@ export interface Rubric {
   criteria: Criterion[];
 }
 
+export interface RubricDiff {
+  weight_changes: [string, number, number][]; // [criterion_id, old, new]
+  added: Criterion[];
+  removed: string[];
+  edited_descriptions: string[];
+}
+
+export interface ApplyRubricResult {
+  new_version: number;
+  rescore_criterion_ids: string[];
+  rescoring: boolean;
+}
+
+export interface RubricChatResponse {
+  reply: string;
+  proposed_rubric: Rubric;
+  diff: RubricDiff;
+}
+
+export type FilterOp = "eq" | "neq" | "gte" | "lte" | "contains" | "in" | "exists";
+
+export interface Filter {
+  field: string;
+  op: FilterOp;
+  value: string | number | boolean | (string | number)[];
+  criterion_id: string | null;
+}
+
+export interface FilterSet {
+  filters: Filter[];
+  unparsed: string[];
+}
+
+export interface ScanResponse {
+  status: string;
+  rubric_id: number;
+}
+
+export interface TriggerScreeningResponse {
+  token: string;
+  chat_url: string;
+  expires_at: string;
+}
+
+export interface CandidateCriterionScore {
+  criterion_id: string;
+  score: number;
+  evidence: string;
+}
+
 export interface Candidate {
   id: number;
   job_id: number;
   name: string;
   email: string;
   phone: string;
+  status: string; // PARSING | SCORING | SCORED | ERROR
+  error_reason: string | null;
   external_id: string | null;
   match_score: number | null;
   overall_status: string | null;
@@ -71,9 +123,20 @@ export interface Candidate {
   l3_status: string | null;
   pre_offer_status: string | null;
   resume_path: string | null;
+  screening_decision: string | null; // null | "rejected" -- HR's resume-screening decision, reversible
   created_at: string;
   profile?: Record<string, unknown>;
   screening_result?: Record<string, unknown> | null;
+  // Only present on GET /candidates responses (rank-derived) -- absent from
+  // tracker/CV upload responses, which return raw candidate rows.
+  overall?: number | null;
+  scores?: CandidateCriterionScore[];
+}
+
+export interface RankedCandidatesResponse {
+  rubric_version: number | null;
+  candidates: Candidate[];
+  unparsed: string[];
 }
 
 export interface RowError {
