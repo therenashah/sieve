@@ -146,6 +146,35 @@ class RubricChatRequest(BaseModel):
     proposed_rubric: Rubric | None = None  # a prior in-session proposal to keep iterating on
 
 
+class RoundAIConfig(BaseModel):
+    """What a future AI interviewer bot for this round would be given/asked to do.
+    Stored as-is (not just UI decoration) so that bot can read it directly later."""
+
+    share_jd: bool = True
+    share_profile: bool = True
+    share_resume: bool = True
+    share_previous_rounds: bool = True
+    share_rubric: bool = True
+    instructions: str = ""
+    store_transcript: bool = True
+    store_recording: bool = False
+    generate_scorecard: bool = True
+    flag_inconsistencies: bool = True
+
+
+class AddRoundRequest(BaseModel):
+    template_key: str  # one of the ROUND_TEMPLATES keys ("custom" mints a fresh round_key)
+    name: str | None = None  # required override when template_key == "custom"
+    description: str | None = None
+
+
+class UpdateRoundRequest(BaseModel):
+    name: str
+    description: str = ""
+    is_ai_based: bool = False
+    ai_config: RoundAIConfig | None = None
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str

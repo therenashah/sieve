@@ -8,7 +8,11 @@ import type {
   HealthResponse,
   Job,
   JobQuestion,
+  JobRound,
+  LeaderboardResponse,
   RankedCandidatesResponse,
+  RoundAIConfig,
+  RoundTemplate,
   Rubric,
   RubricChatResponse,
   ScanResponse,
@@ -66,6 +70,15 @@ async function authFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/health");
+}
+
+export interface SearchResult {
+  jobs: { id: number; title: string }[];
+  candidates: { id: number; job_id: number; name: string; external_id: string | null }[];
+}
+
+export function search(q: string): Promise<SearchResult> {
+  return authFetch<SearchResult>(`/api/search?q=${encodeURIComponent(q)}`);
 }
 
 export function login(email: string, password: string): Promise<{ token: string; expires_at: string }> {
@@ -235,6 +248,53 @@ export function triggerScreening(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question_ids: questionIds }),
   });
+}
+
+export function getLeaderboard(jobId: number | string): Promise<LeaderboardResponse> {
+  return authFetch<LeaderboardResponse>(`/api/jobs/${jobId}/leaderboard`);
+}
+
+export function listRounds(jobId: number | string): Promise<JobRound[]> {
+  return authFetch<JobRound[]>(`/api/jobs/${jobId}/rounds`);
+}
+
+export function listRoundTemplates(jobId: number | string): Promise<RoundTemplate[]> {
+  return authFetch<RoundTemplate[]>(`/api/jobs/${jobId}/rounds/templates`);
+}
+
+export function addRound(
+  jobId: number | string,
+  templateKey: string,
+  name?: string,
+  description?: string
+): Promise<JobRound> {
+  return authFetch<JobRound>(`/api/jobs/${jobId}/rounds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ template_key: templateKey, name, description }),
+  });
+}
+
+export function updateRound(
+  jobId: number | string,
+  roundId: number,
+  body: { name: string; description: string; is_ai_based: boolean; ai_config: RoundAIConfig | null }
+): Promise<JobRound> {
+  return authFetch<JobRound>(`/api/jobs/${jobId}/rounds/${roundId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteRound(jobId: number | string, roundId: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}/rounds/${roundId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await toErrorMessage(response));
+  }
 }
 
 export function getChatSession(token: string): Promise<SessionStatusResponse> {

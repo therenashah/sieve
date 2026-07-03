@@ -197,8 +197,6 @@ export interface RoundResult {
   updated_at: string;
 }
 
-export type RoundName = "resume_screening" | "hr_screening" | "l1" | "l2" | "l3" | "pre_offer";
-
 export interface ScreeningSessionSummary {
   id: number;
   token: string;
@@ -218,7 +216,89 @@ export interface ScreeningAnswer {
   created_at: string;
 }
 
+export interface CandidateRound {
+  round_key: string;
+  name: string;
+  description: string;
+  is_builtin: boolean;
+  is_ai_based: boolean;
+  result: RoundResult | null;
+}
+
 export interface CandidateDetail extends Candidate {
-  rounds: Record<RoundName, RoundResult | null>;
+  rounds: CandidateRound[];
   screening_sessions: ScreeningSessionSummary[];
+}
+
+// ---------- round management ----------
+
+export interface RoundAIConfig {
+  share_jd: boolean;
+  share_profile: boolean;
+  share_resume: boolean;
+  share_previous_rounds: boolean;
+  share_rubric: boolean;
+  instructions: string;
+  store_transcript: boolean;
+  store_recording: boolean;
+  generate_scorecard: boolean;
+  flag_inconsistencies: boolean;
+}
+
+export interface JobRound {
+  id: number;
+  job_id: number;
+  round_key: string;
+  name: string;
+  description: string;
+  order_index: number;
+  is_builtin: boolean;
+  is_ai_based: boolean;
+  ai_config: RoundAIConfig | null;
+  default_ai_config?: RoundAIConfig; // only present on the create-round response
+}
+
+export interface RoundTemplate {
+  key: string;
+  name: string;
+  description: string;
+}
+
+// ---------- leaderboard ----------
+
+export interface LeaderboardRound {
+  round_key: string;
+  name: string;
+}
+
+export interface LeaderboardRoundScore {
+  round_key: string;
+  score: number | null;
+}
+
+export interface LeaderboardCandidate {
+  id: number;
+  job_id: number;
+  name: string;
+  email: string;
+  external_id: string | null;
+  source_type: string | null;
+  source_name: string | null;
+  application_date: string | null;
+  round_scores: LeaderboardRoundScore[];
+  overall: number | null;
+  status: string;
+}
+
+export interface FunnelStage {
+  round_key: string;
+  name: string;
+  count: number;
+}
+
+export interface LeaderboardResponse {
+  rounds: LeaderboardRound[];
+  candidates: LeaderboardCandidate[];
+  funnel: FunnelStage[];
+  total_candidates: number;
 }

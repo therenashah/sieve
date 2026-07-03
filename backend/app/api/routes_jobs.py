@@ -9,16 +9,19 @@ from app import storage, tracker
 from app.auth import require_auth
 from app.config import get_settings
 from app.conversations import engine
-from app.db import DEFAULT_HR_QUESTIONS, get_db
+from app.db import BUILTIN_ROUNDS, DEFAULT_HR_QUESTIONS, ROUND_TEMPLATES, get_db
 from app.models import (
     AddQuestionRequest,
+    AddRoundRequest,
     Criterion,
     FilterParseRequest,
     FilterSet,
+    RoundAIConfig,
     Rubric,
     RubricChatRequest,
     TriggerScreeningRequest,
     TriggerScreeningResponse,
+    UpdateRoundRequest,
 )
 from app.pipeline import filters, hr_questions, parser, ranker, rubric, scorer
 
@@ -74,6 +77,12 @@ async def create_job(title: str = Form(...), description: str = Form("")):
                 """INSERT INTO job_questions (job_id, question_text, order_index, is_mandatory, source)
                    VALUES (?, ?, ?, 1, 'default')""",
                 (job_id, question, index),
+            )
+        for index, round_def in enumerate(BUILTIN_ROUNDS):
+            conn.execute(
+                """INSERT INTO job_rounds (job_id, round_key, name, description, order_index, is_builtin)
+                   VALUES (?, ?, ?, ?, ?, 1)""",
+                (job_id, round_def["round_key"], round_def["name"], round_def["description"], index),
             )
         conn.commit()
 
@@ -348,6 +357,138 @@ async def delete_question(job_id: int, question_id: int):
     return None
 
 
+def _parse_round(row) -> dict:
+    round_ = dict(row)
+    round_["is_builtin"] = bool(round_["is_builtin"])
+    round_["is_ai_based"] = bool(round_["is_ai_based"])
+    ai_config_json = round_.pop("ai_config_json")
+    round_["ai_config"] = json.loads(ai_config_json) if ai_config_json else None
+    return round_
+
+
+def _default_ai_config(round_name: str, job_title: str) -> dict:
+    return RoundAIConfig(
+        instructions=(
+            f"Conduct the {round_name} interview for the {job_title} role. Ask clear, structured "
+            "questions based on the job description and the candidate's profile, probe for depth on "
+            "vague or evasive answers, and stay professional and unbiased throughout."
+        )
+    ).model_dump()
+
+
+@router.get("/{job_id}/rounds")
+async def list_rounds(job_id: int):
+    """The configured pipeline for this job, in order — resume_screening and hr_screening
+    are always present (builtin); anything else is an optional round the recruiter added.
+    """
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
+        ).fetchall()
+    return [_parse_round(r) for r in rows]
+
+
+@router.get("/{job_id}/rounds/templates")
+async def list_round_templates(job_id: int):
+    """Optional-round templates not yet added to this job (custom is always offered —
+    a recruiter may want more than one custom round)."""
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        existing_keys = {
+            row["round_key"] for row in conn.execute("SELECT round_key FROM job_rounds WHERE job_id = ?", (job_id,))
+        }
+    return [t for t in ROUND_TEMPLATES if t["key"] == "custom" or t["key"] not in existing_keys]
+
+
+@router.post("/{job_id}/rounds", status_code=201)
+async def add_round(job_id: int, body: AddRoundRequest):
+    job = _get_job_or_404(job_id)
+    template = next((t for t in ROUND_TEMPLATES if t["key"] == body.template_key), None)
+    if template is None:
+        raise HTTPException(status_code=400, detail=f"Unknown round template '{body.template_key}'")
+
+    name = (body.name or template["name"]).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Round name is required")
+    description = body.description if body.description is not None else template["description"]
+
+    with get_db() as conn:
+        if body.template_key == "custom":
+            existing_customs = conn.execute(
+                "SELECT COUNT(*) AS c FROM job_rounds WHERE job_id = ? AND round_key LIKE 'custom_%'", (job_id,)
+            ).fetchone()["c"]
+            round_key = f"custom_{existing_customs + 1}"
+        else:
+            round_key = body.template_key
+            clash = conn.execute(
+                "SELECT 1 FROM job_rounds WHERE job_id = ? AND round_key = ?", (job_id, round_key)
+            ).fetchone()
+            if clash:
+                raise HTTPException(status_code=400, detail=f"'{template['name']}' has already been added")
+
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(order_index), -1) AS m FROM job_rounds WHERE job_id = ?", (job_id,)
+        ).fetchone()["m"]
+        cur = conn.execute(
+            """INSERT INTO job_rounds (job_id, round_key, name, description, order_index, is_builtin)
+               VALUES (?, ?, ?, ?, ?, 0)""",
+            (job_id, round_key, name, description, max_order + 1),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM job_rounds WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+    result = _parse_round(row)
+    result["default_ai_config"] = _default_ai_config(name, job["title"])
+    return result
+
+
+@router.put("/{job_id}/rounds/{round_id}")
+async def update_round(job_id: int, round_id: int, body: UpdateRoundRequest):
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM job_rounds WHERE id = ? AND job_id = ?", (round_id, job_id)
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Round not found")
+
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Round name is required")
+
+        ai_config = body.ai_config.model_dump() if (body.is_ai_based and body.ai_config) else None
+        conn.execute(
+            """UPDATE job_rounds SET name = ?, description = ?, is_ai_based = ?, ai_config_json = ?
+               WHERE id = ?""",
+            (name, body.description, int(body.is_ai_based), json.dumps(ai_config) if ai_config else None, round_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM job_rounds WHERE id = ?", (round_id,)).fetchone()
+    return _parse_round(row)
+
+
+@router.delete("/{job_id}/rounds/{round_id}", status_code=204)
+async def delete_round(job_id: int, round_id: int):
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT is_builtin, round_key FROM job_rounds WHERE id = ? AND job_id = ?", (round_id, job_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Round not found")
+        if row["is_builtin"]:
+            raise HTTPException(status_code=400, detail="Built-in rounds can't be removed")
+        conn.execute(
+            """DELETE FROM round_results WHERE round = ? AND candidate_id IN
+               (SELECT id FROM candidates WHERE job_id = ?)""",
+            (row["round_key"], job_id),
+        )
+        conn.execute("DELETE FROM job_rounds WHERE id = ?", (round_id,))
+        conn.commit()
+    return None
+
+
 @router.post("/{job_id}/rubric/apply")
 async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: BackgroundTasks):
     """Persist a proposed rubric (manual HR edits, or a fine-tune chat proposal) as the
@@ -445,6 +586,98 @@ async def list_candidates(job_id: int, filter: str | None = Query(default=None),
     return {"rubric_version": rubric_row["version"], "candidates": candidates, "unparsed": unparsed}
 
 
+@router.get("/{job_id}/leaderboard")
+async def get_leaderboard(job_id: int):
+    """The master performance view for a job: every candidate, their score in each
+    configured round (or null if that round hasn't produced one for them yet), an
+    overall average across rounds with a score, a plain-English pipeline status, and a
+    funnel count of how many candidates have cleared each round — everything the
+    candidate table + funnel chart on the job page need in one call.
+    """
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        round_defs = conn.execute(
+            "SELECT * FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
+        ).fetchall()
+        cand_rows = conn.execute(
+            "SELECT * FROM candidates WHERE job_id = ? ORDER BY id ASC", (job_id,)
+        ).fetchall()
+        result_rows = conn.execute(
+            """SELECT rr.* FROM round_results rr
+               JOIN candidates c ON c.id = rr.candidate_id WHERE c.job_id = ?""",
+            (job_id,),
+        ).fetchall()
+        active_session_rows = conn.execute(
+            "SELECT DISTINCT candidate_id FROM screening_sessions WHERE job_id = ? AND status = 'active'",
+            (job_id,),
+        ).fetchall()
+
+    rounds = [{"round_key": r["round_key"], "name": r["name"]} for r in round_defs]
+    scores_by_candidate: dict[int, dict[str, int | None]] = {}
+    for row in result_rows:
+        scores_by_candidate.setdefault(row["candidate_id"], {})[row["round"]] = row["score"]
+    has_active_session = {row["candidate_id"] for row in active_session_rows}
+
+    leaderboard = []
+    funnel_counts = {r["round_key"]: 0 for r in rounds}
+
+    for cand in cand_rows:
+        cand_scores = scores_by_candidate.get(cand["id"], {})
+        round_scores = []
+        completed_count = 0
+        first_incomplete_key = None
+        for r in rounds:
+            score = cand_scores.get(r["round_key"])
+            round_scores.append({"round_key": r["round_key"], "score": score})
+            if score is not None:
+                completed_count += 1
+                funnel_counts[r["round_key"]] += 1
+            elif first_incomplete_key is None:
+                first_incomplete_key = r["round_key"]
+
+        numeric_scores = [s["score"] for s in round_scores if s["score"] is not None]
+        overall = round(sum(numeric_scores) / len(numeric_scores), 1) if numeric_scores else None
+
+        # Only "hr_screening" has an active trigger/session mechanism today, so an active
+        # session only counts as "pending" when it's specifically the next round due —
+        # otherwise (e.g. a stray/expired session for a different round) don't misattribute it.
+        if rounds and completed_count == len(rounds):
+            status = "All rounds completed"
+        elif first_incomplete_key == "hr_screening" and cand["id"] in has_active_session:
+            status = f"R{completed_count + 1} pending"
+        elif completed_count > 0:
+            status = f"R{completed_count} completed"
+        else:
+            status = "Not started"
+
+        leaderboard.append(
+            {
+                "id": cand["id"],
+                "job_id": job_id,
+                "name": cand["name"],
+                "email": cand["email"],
+                "external_id": cand["external_id"],
+                "source_type": cand["source_type"],
+                "source_name": cand["source_name"],
+                "application_date": cand["application_date"],
+                "round_scores": round_scores,
+                "overall": overall,
+                "status": status,
+            }
+        )
+
+    funnel = [
+        {"round_key": r["round_key"], "name": r["name"], "count": funnel_counts[r["round_key"]]} for r in rounds
+    ]
+
+    return {
+        "rounds": rounds,
+        "candidates": leaderboard,
+        "funnel": funnel,
+        "total_candidates": len(cand_rows),
+    }
+
+
 def _get_candidate_or_404(job_id: int, candidate_id: int) -> dict:
     with get_db() as conn:
         row = conn.execute(
@@ -455,15 +688,12 @@ def _get_candidate_or_404(job_id: int, candidate_id: int) -> dict:
     return dict(row)
 
 
-_ROUNDS = ["resume_screening", "hr_screening", "l1", "l2", "l3", "pre_offer"]
-
-
 @router.get("/{job_id}/candidates/{candidate_id}")
 async def get_candidate_detail(job_id: int, candidate_id: int):
-    """Full candidate detail for the candidate page: profile + one card per pipeline
-    round. Rounds with no result yet (e.g. resume_screening until that pipeline's scorer
-    output is copied over, or any round not yet run for this candidate) come back as
-    null — the frontend renders those as empty/placeholder cards rather than omitting them.
+    """Full candidate detail for the candidate page: profile + one card per configured
+    pipeline round (whatever's in job_rounds for this job, in order). Rounds with no
+    result yet come back with result=null — the frontend renders those as empty/
+    placeholder cards rather than omitting them.
     """
     _get_job_or_404(job_id)
     with get_db() as conn:
@@ -473,6 +703,9 @@ async def get_candidate_detail(job_id: int, candidate_id: int):
         if not cand_row:
             raise HTTPException(status_code=404, detail=f"Candidate {candidate_id} not found")
 
+        round_defs = conn.execute(
+            "SELECT * FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
+        ).fetchall()
         round_rows = conn.execute(
             "SELECT * FROM round_results WHERE candidate_id = ?", (candidate_id,)
         ).fetchall()
@@ -482,15 +715,27 @@ async def get_candidate_detail(job_id: int, candidate_id: int):
             (job_id, candidate_id),
         ).fetchall()
 
-    rounds = {name: None for name in _ROUNDS}
+    results_by_round = {}
     for row in round_rows:
-        rounds[row["round"]] = {
+        results_by_round[row["round"]] = {
             "score": row["score"],
             "summary": row["summary"],
             "key_highlights": json.loads(row["key_highlights_json"]) if row["key_highlights_json"] else [],
             "flags": json.loads(row["flags_json"]) if row["flags_json"] else [],
             "updated_at": row["updated_at"],
         }
+
+    rounds = [
+        {
+            "round_key": r["round_key"],
+            "name": r["name"],
+            "description": r["description"],
+            "is_builtin": bool(r["is_builtin"]),
+            "is_ai_based": bool(r["is_ai_based"]),
+            "result": results_by_round.get(r["round_key"]),
+        }
+        for r in round_defs
+    ]
 
     sessions = []
     for row in session_rows:

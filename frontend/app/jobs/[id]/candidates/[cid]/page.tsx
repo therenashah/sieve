@@ -6,7 +6,18 @@ import { useCallback, useEffect, useState } from "react";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
 import { ApiError, getCandidateDetail, getScreeningAnswers } from "@/lib/api";
-import type { CandidateDetail, RoundResult, ScreeningAnswer, ScreeningSessionSummary } from "@/lib/types";
+import type { CandidateDetail, CandidateRound, ScreeningAnswer, ScreeningSessionSummary } from "@/lib/types";
+
+const ROUND_SUBTITLES: Record<string, string> = {
+  resume_screening: "Match score & gate check",
+  hr_screening: "Chat summary & updated fitment",
+};
+
+const ROUND_EMPTY_HINTS: Record<string, string> = {
+  resume_screening:
+    "Not run yet — the resume-screening pipeline (mandatory gate + fitment scoring) isn't wired up yet. This card will populate automatically once it is.",
+  hr_screening: "No completed HR screening chat yet. Trigger one from the HR Screening round page.",
+};
 
 function initials(name: string): string {
   return name
@@ -77,7 +88,7 @@ function RoundCard({
   number: number;
   title: string;
   subtitle: string;
-  result: RoundResult | null;
+  result: CandidateRound["result"];
   emptyHint: string;
   extra?: React.ReactNode;
 }) {
@@ -216,43 +227,30 @@ function CandidateDetailInner() {
               </span>
             </div>
 
-            <RoundCard
-              number={1}
-              title="Resume Screening"
-              subtitle="Match score & gate check"
-              result={candidate.rounds.resume_screening}
-              emptyHint="Not run yet — the resume-screening pipeline (mandatory gate + fitment scoring) isn't wired up yet. This card will populate automatically once it is."
-            />
-
-            <RoundCard
-              number={2}
-              title="HR Screening"
-              subtitle="Chat summary & updated fitment"
-              result={candidate.rounds.hr_screening}
-              emptyHint="No completed HR screening chat yet. Trigger one from the HR Screening round page."
-              extra={
-                completedSessions.length > 0 ? (
-                  <div>
-                    <p className="section-label" style={{ margin: "0.75rem 0 0.4rem" }}>
-                      Chat transcripts
-                    </p>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-                      {completedSessions.map((s) => (
-                        <SessionTranscript key={s.id} jobId={jobId} candidateId={candidateId} session={s} />
-                      ))}
+            {candidate.rounds.map((round, i) => (
+              <RoundCard
+                key={round.round_key}
+                number={i + 1}
+                title={round.name}
+                subtitle={ROUND_SUBTITLES[round.round_key] ?? round.description ?? "AI-assessed round"}
+                result={round.result}
+                emptyHint={ROUND_EMPTY_HINTS[round.round_key] ?? "Not started yet."}
+                extra={
+                  round.round_key === "hr_screening" && completedSessions.length > 0 ? (
+                    <div>
+                      <p className="section-label" style={{ margin: "0.75rem 0 0.4rem" }}>
+                        Chat transcripts
+                      </p>
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                        {completedSessions.map((s) => (
+                          <SessionTranscript key={s.id} jobId={jobId} candidateId={candidateId} session={s} />
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ) : undefined
-              }
-            />
-
-            <RoundCard
-              number={3}
-              title="L1 Interview"
-              subtitle="Technical & behavioral scorecard"
-              result={candidate.rounds.l1}
-              emptyHint="Not started yet."
-            />
+                  ) : undefined
+                }
+              />
+            ))}
           </>
         )}
       </main>

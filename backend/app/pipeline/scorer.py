@@ -12,6 +12,97 @@ from app.pipeline import parser
 from app.pipeline.profile import extract_profile
 
 
+def _build_resume_screening_result(rubric: Rubric, score_rows: list) -> dict:
+    """Turn a candidate's full criterion_scores set under `rubric` into the same shape
+    the HR-screening analyzer writes to round_results, so the leaderboard/candidate page
+    can render both rounds identically. `score` is a 0-100 percentage — same weighted
+    formula (and same rounding) as ranker.rank()'s `overall`, just *100 instead of /10,
+    so this always matches what the resume-screening page shows for the same candidate.
+    """
+    name_by_id = {c.id: c.name for c in rubric.criteria}
+    weights = {c.id: c.weight for c in rubric.criteria}
+    weighted_avg = sum(row["score"] * weights.get(row["criterion_id"], 0.0) for row in score_rows)
+    score_pct = round(weighted_avg * 10)
+
+    ordered = sorted(score_rows, key=lambda r: r["score"], reverse=True)
+    key_highlights = [
+        f"{name_by_id.get(row['criterion_id'], row['criterion_id'])}: {row['score']}/10"
+        + (f" — {row['note']}" if row["note"] else "")
+        for row in ordered[:5]
+    ]
+
+    flags = []
+    for row in score_rows:
+        crit_name = name_by_id.get(row["criterion_id"], row["criterion_id"])
+        if row["score"] <= 3:
+            flags.append({"type": "red", "detail": f"Weak on {crit_name} ({row['score']}/10): {row['evidence']}"})
+        elif row["score"] >= 8:
+            flags.append({"type": "green", "detail": f"Strong on {crit_name} ({row['score']}/10): {row['evidence']}"})
+
+    summary = f"Scored {score_pct}% against the current rubric across {len(score_rows)} criteria."
+    return {"score": score_pct, "summary": summary, "key_highlights": key_highlights, "flags": flags}
+
+
+def _upsert_resume_screening_round_result(conn, candidate_id: int, rubric_id: int, rubric: Rubric) -> None:
+    score_rows = conn.execute(
+        "SELECT criterion_id, score, evidence, note FROM criterion_scores WHERE candidate_id = ? AND rubric_id = ?",
+        (candidate_id, rubric_id),
+    ).fetchall()
+    if not score_rows:
+        return
+
+    result = _build_resume_screening_result(rubric, score_rows)
+    conn.execute(
+        """INSERT INTO round_results (candidate_id, round, score, summary, key_highlights_json, flags_json)
+           VALUES (?, 'resume_screening', ?, ?, ?, ?)
+           ON CONFLICT(candidate_id, round) DO UPDATE SET
+               score = excluded.score, summary = excluded.summary,
+               key_highlights_json = excluded.key_highlights_json, flags_json = excluded.flags_json,
+               updated_at = datetime('now')""",
+        (
+            candidate_id,
+            result["score"],
+            result["summary"],
+            json.dumps(result["key_highlights"]),
+            json.dumps(result["flags"]),
+        ),
+    )
+
+
+def backfill_resume_screening_round_results() -> int:
+    """One-time-safe backfill for candidates scored before round_results existed (or
+    before this bridge was wired up): for every job's latest rubric, (re)write
+    round_results for every candidate with criterion_scores under it. Idempotent —
+    safe to call on every startup.
+    """
+    updated = 0
+    with get_db() as conn:
+        jobs = conn.execute("SELECT id FROM jobs").fetchall()
+        for job in jobs:
+            job_id = job["id"]
+            rubric_row = conn.execute(
+                "SELECT id, version, criteria_json FROM rubrics WHERE job_id = ? ORDER BY version DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if rubric_row is None:
+                continue
+            rubric = Rubric(
+                version=rubric_row["version"],
+                criteria=[Criterion(**c) for c in json.loads(rubric_row["criteria_json"])],
+            )
+            candidate_ids = [
+                row["candidate_id"]
+                for row in conn.execute(
+                    "SELECT DISTINCT candidate_id FROM criterion_scores WHERE rubric_id = ?", (rubric_row["id"],)
+                ).fetchall()
+            ]
+            for candidate_id in candidate_ids:
+                _upsert_resume_screening_round_result(conn, candidate_id, rubric_row["id"], rubric)
+                updated += 1
+        conn.commit()
+    return updated
+
+
 def _criteria_block(criteria: list[Criterion]) -> str:
     return "\n\n".join(f"- id: {c.id}\n  name: {c.name}\n  description: {c.description}" for c in criteria)
 
@@ -112,6 +203,7 @@ async def score_pool(job_id: int, rubric_id: int, only_criteria: list[str] | Non
                     "UPDATE candidates SET status = 'SCORED', error_reason = NULL WHERE id = ?",
                     (candidate_id,),
                 )
+                _upsert_resume_screening_round_result(conn, candidate_id, rubric_id, rubric)
                 conn.commit()
         except Exception as exc:  # noqa: BLE001 - isolate this candidate's failure from the batch
             with get_db() as conn:

@@ -150,6 +150,26 @@ CREATE TABLE IF NOT EXISTS round_results (
     UNIQUE(candidate_id, round)
 );
 
+-- The rounds configured for a job, in pipeline order. resume_screening and
+-- hr_screening are seeded as builtins (is_builtin=1, can't be deleted) since
+-- they're wired to dedicated pipelines; anything else is an optional round the
+-- recruiter added from a template (or fully custom), most of them AI-interview
+-- rounds whose ai_config_json drives what a future AI interviewer bot gets
+-- told/does — this table is that bot's config source, not just UI decoration.
+CREATE TABLE IF NOT EXISTS job_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    round_key TEXT NOT NULL,         -- stable key, matches round_results.round
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    order_index INTEGER NOT NULL,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    is_ai_based INTEGER NOT NULL DEFAULT 0,
+    ai_config_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(job_id, round_key)
+);
+
 CREATE TABLE IF NOT EXISTS recruiter_sessions (
     token TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -228,6 +248,51 @@ DEFAULT_HR_QUESTIONS = [
     "Why are you interested in joining Seclore?",
 ]
 
+# The two rounds every job pipeline has by default — seeded for new jobs and
+# backfilled onto any job created before job_rounds existed.
+BUILTIN_ROUNDS = [
+    {
+        "round_key": "resume_screening",
+        "name": "Resume Screening",
+        "description": "AI mandatory-gate check and fitment scoring against the JD-derived rubric.",
+    },
+    {
+        "round_key": "hr_screening",
+        "name": "HR Screening",
+        "description": "Conversational HR screening chat covering logistics, background, and culture fit.",
+    },
+]
+
+# Catalog of optional rounds a recruiter can add from the round management UI.
+# "custom" has no fixed round_key — the endpoint mints one (custom_1, custom_2, ...).
+ROUND_TEMPLATES = [
+    {
+        "key": "l1_interview",
+        "name": "L1 Interview",
+        "description": "First technical/managerial round assessing core competency fit.",
+    },
+    {
+        "key": "l2_interview",
+        "name": "L2 Interview",
+        "description": "Second-level interview, typically a deeper technical or leadership assessment.",
+    },
+    {
+        "key": "technical_interview_1",
+        "name": "Technical Interview 1",
+        "description": "Focused technical assessment — coding, system design, or domain expertise.",
+    },
+    {
+        "key": "technical_interview_2",
+        "name": "Technical Interview 2",
+        "description": "A second technical round, often deeper or with a different panel.",
+    },
+    {
+        "key": "custom",
+        "name": "Custom Round",
+        "description": "Define your own round from scratch.",
+    },
+]
+
 
 def _migrate(conn: sqlite3.Connection) -> None:
     for table, columns in (
@@ -246,6 +311,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_job_external ON candidates(job_id, external_id)"
     )
     _backfill_default_hr_questions(conn)
+    _backfill_builtin_rounds(conn)
+
+
+def _backfill_builtin_rounds(conn: sqlite3.Connection) -> None:
+    job_ids = [row["id"] for row in conn.execute("SELECT id FROM jobs")]
+    for job_id in job_ids:
+        existing = {
+            row["round_key"] for row in conn.execute("SELECT round_key FROM job_rounds WHERE job_id = ?", (job_id,))
+        }
+        for index, round_def in enumerate(BUILTIN_ROUNDS):
+            if round_def["round_key"] in existing:
+                continue
+            conn.execute(
+                """INSERT INTO job_rounds (job_id, round_key, name, description, order_index, is_builtin)
+                   VALUES (?, ?, ?, ?, ?, 1)""",
+                (job_id, round_def["round_key"], round_def["name"], round_def["description"], index),
+            )
 
 
 def _backfill_default_hr_questions(conn: sqlite3.Connection) -> None:

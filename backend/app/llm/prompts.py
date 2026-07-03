@@ -191,14 +191,19 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
+# Always the very first thing asked, before any of the recruiter's selected questions —
+# a screening chat shouldn't open with a direct/logistics question (e.g. "are you okay
+# relocating?"); warm the candidate up first, same as a human recruiter would.
+ICEBREAKER_QUESTION = "To kick things off, could you tell me briefly about your current role and what you work on day-to-day?"
+
+
 def build_intro_message(candidate_name: str, job_title: str, first_question: str | None) -> str:
     """Fixed opening message (not LLM-generated) — boilerplate about Seclore, what to
     expect, and the greeting itself should never be hallucinated or drift between
     candidates, so this is deterministic text. We already have the candidate's name
     on file (from the tracker/resume), so we use it directly for a personal touch
-    instead of asking them to introduce themselves. Ends with the first screening
-    question appended verbatim — deterministic end-to-end, no LLM call needed to
-    open the chat, which also guarantees the very first question asked is correct."""
+    instead of asking them to introduce themselves. Ends with the icebreaker question
+    appended verbatim — deterministic end-to-end, no LLM call needed to open the chat."""
     first_name = candidate_name.split()[0] if candidate_name else "there"
     closing = (
         f'\n\n🚀 Let\'s get started! {first_question}' if first_question else "\n\n🚀 Let's get started!"

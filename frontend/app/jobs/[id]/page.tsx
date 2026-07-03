@@ -3,12 +3,14 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import CandidateTable from "@/components/CandidateTable";
 import FileUpload from "@/components/FileUpload";
+import FunnelChart from "@/components/FunnelChart";
+import Leaderboard from "@/components/Leaderboard";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
-import { ApiError, getJob, listCandidates, uploadCvs, uploadTracker } from "@/lib/api";
-import type { Candidate, CvUploadResult, Job, RowError } from "@/lib/types";
+import RoundManagement from "@/components/RoundManagement";
+import { ApiError, getJob, getLeaderboard, uploadCvs, uploadTracker } from "@/lib/api";
+import type { CvUploadResult, Job, LeaderboardResponse, RowError } from "@/lib/types";
 
 function JobDetailInner() {
   const params = useParams<{ id: string }>();
@@ -16,16 +18,16 @@ function JobDetailInner() {
   const router = useRouter();
 
   const [job, setJob] = useState<Job | null>(null);
-  const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [error, setError] = useState("");
   const [rowErrors, setRowErrors] = useState<RowError[]>([]);
   const [cvResult, setCvResult] = useState<CvUploadResult | null>(null);
 
   const refresh = useCallback(() => {
-    Promise.all([getJob(jobId), listCandidates(jobId)])
-      .then(([j, c]) => {
+    Promise.all([getJob(jobId), getLeaderboard(jobId)])
+      .then(([j, lb]) => {
         setJob(j);
-        setCandidates(c.candidates);
+        setLeaderboard(lb);
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
@@ -124,39 +126,28 @@ function JobDetailInner() {
           </>
         )}
 
-        {candidates && candidates.length > 0 && (
+        {leaderboard && (
           <>
-            <p className="section-label">{candidates.length} candidates — click a row to open their profile</p>
-            <CandidateTable
-              candidates={candidates}
-              onRowClick={(c) => router.push(`/jobs/${jobId}/candidates/${c.id}`)}
-            />
+            <div className="card" style={{ marginTop: "1.5rem" }}>
+              <p className="section-label" style={{ margin: "0 0 0.75rem" }}>
+                Pipeline progress
+              </p>
+              <FunnelChart stages={leaderboard.funnel} total={leaderboard.total_candidates} />
+            </div>
+
+            <p className="section-label">Candidates — click a row to open their profile</p>
+            {leaderboard.candidates.length > 0 ? (
+              <Leaderboard data={leaderboard} onRowClick={(c) => router.push(`/jobs/${jobId}/candidates/${c.id}`)} />
+            ) : (
+              <div className="empty-state">
+                <p>No candidates yet — upload a tracker above to get started.</p>
+              </div>
+            )}
           </>
         )}
 
-        {candidates && candidates.length === 0 && (
-          <div className="empty-state">
-            <p>No candidates yet — upload a tracker above to get started.</p>
-          </div>
-        )}
-
         <p className="section-label">Round management</p>
-        <div className="round-grid">
-          <div className="card round-card" onClick={() => router.push(`/jobs/${jobId}/screening`)}>
-            <span className="round-card-number">1</span>
-            <div>
-              <div className="round-card-title">Resume Screening</div>
-              <div className="round-card-subtitle">Rubric, AI scan, ranked candidates</div>
-            </div>
-          </div>
-          <div className="card round-card" onClick={() => router.push(`/jobs/${jobId}/rounds/hr-screening`)}>
-            <span className="round-card-number">2</span>
-            <div>
-              <div className="round-card-title">HR Screening</div>
-              <div className="round-card-subtitle">Trigger chats, review summaries</div>
-            </div>
-          </div>
-        </div>
+        {job && <RoundManagement jobId={jobId} jobTitle={job.title} onRoundsChanged={refresh} />}
       </main>
     </>
   );

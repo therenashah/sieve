@@ -287,12 +287,14 @@ async def start_session(token: str) -> dict:
     # Fixed, deterministic opening — no LLM call, so the "about Seclore" boilerplate (and
     # the first question itself) can never drift or be hallucinated/improvised. We already
     # have the candidate's name on file, so there's no separate "what's your name" round
-    # trip — straight into the first question.
-    first_question = questions[0]["question_text"] if questions else None
+    # trip. Always opens with a warm icebreaker (never a direct/logistics question like
+    # "are you okay relocating?") before moving into the recruiter's selected questions —
+    # current_question_index=-1 marks "icebreaker asked, real questions haven't started".
+    first_question = prompts.ICEBREAKER_QUESTION if questions else None
     reply = prompts.build_intro_message(candidate["name"], job["title"], first_question)
 
     if questions:
-        _update_session(session["id"], phase="MANDATORY", current_question_index=0)
+        _update_session(session["id"], phase="MANDATORY", current_question_index=-1)
         phase = "MANDATORY"
     else:
         _update_session(session["id"], phase="SECLORE_QA", seclore_qa_count=0)
@@ -333,8 +335,18 @@ async def _handle_mandatory(session: dict, candidate: dict, job: dict, user_text
     settings = get_settings()
     questions = get_session_questions(session)
     index = session["current_question_index"]
-    current_question = questions[index]
 
+    if index == -1:
+        # They just answered the icebreaker, not one of the real screening questions —
+        # record it as such (not tied to a job_questions row) and move into question 0.
+        _save_answer(session["id"], None, prompts.ICEBREAKER_QUESTION, "icebreaker", user_text)
+        instruction = prompts.ask_next_mandatory_question(questions[0]["question_text"], new_section=True)
+        reply = await _generate(session, candidate, job, instruction)
+        _update_session(session["id"], current_question_index=0)
+        _save_message(session["id"], "assistant", reply, "MANDATORY")
+        return {"session_status": "active", "phase": "MANDATORY", "messages": [{"role": "assistant", "content": reply}]}
+
+    current_question = questions[index]
     _save_answer(session["id"], current_question["id"], current_question["question_text"], "mandatory", user_text)
 
     next_index = index + 1

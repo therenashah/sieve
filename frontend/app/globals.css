@@ -153,6 +153,77 @@ a {
   font-size: 0.9rem;
 }
 
+.navbar-search {
+  position: relative;
+  margin-left: auto;
+}
+
+.navbar-search-icon {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.85rem;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.navbar-search input {
+  width: 360px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.9rem 0.5rem 2.1rem;
+  border: none;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+}
+
+.navbar-search input:focus {
+  outline: 2px solid var(--blue-500);
+}
+
+.navbar-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.navbar-search-results {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  width: 320px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.navbar-search-results button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem 0.9rem;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.navbar-search-results button:hover {
+  background: var(--blue-050);
+}
+
+.navbar-search-empty {
+  padding: 0.6rem 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 /* ---------- buttons ---------- */
 
 .btn {
@@ -1345,4 +1416,180 @@ a {
 
 .chat-input:disabled {
   background: var(--bg);
+}
+
+/* ---------- leaderboard ---------- */
+
+.leaderboard-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.leaderboard-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.leaderboard-filter select {
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text);
+}
+
+.leaderboard-filter-input {
+  width: 70px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.table th.sortable:hover {
+  color: var(--blue-600);
+}
+
+/* ---------- funnel chart ---------- */
+
+.funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.funnel-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 40px;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.funnel-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.funnel-bar-track {
+  background: var(--neutral-bg);
+  border-radius: 999px;
+  height: 20px;
+  overflow: hidden;
+}
+
+.funnel-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue-500), var(--blue-600));
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.funnel-bar-total {
+  background: var(--navy-800);
+}
+
+.funnel-count {
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+/* ---------- round management extras ---------- */
+
+.round-card-optional {
+  cursor: default;
+}
+
+.round-edit-icon {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+.round-edit-icon:hover {
+  background: var(--blue-050);
+  color: var(--blue-600);
+  border-color: var(--blue-500);
+}
+
+.round-add-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 1rem;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 76px;
+}
+
+.round-add-box:hover {
+  border-color: var(--blue-500);
+  color: var(--blue-600);
+  background: var(--blue-050);
+}
+
+.round-add-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.round-ai-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--blue-050);
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.round-ai-config {
+  margin-top: 0.5rem;
+  padding-top: 0.25rem;
+}
+
+.round-ai-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem;
+}
+
+.round-ai-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  padding: 0.3rem 0;
+  cursor: pointer;
 }
