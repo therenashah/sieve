@@ -2,7 +2,7 @@
 
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 
 from app import storage, tracker
 from app.auth import require_auth
@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.conversations import engine
 from app.db import get_db
 from app.models import TriggerScreeningResponse
+from app.pipeline import parser, rubric
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_auth)])
 
@@ -57,7 +58,12 @@ async def get_job(job_id: int):
 
 
 @router.post("/{job_id}/jd")
-async def upload_jd(job_id: int, file: UploadFile = File(...)):
+async def upload_jd(job_id: int, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Saves the JD file, extracts its text, and kicks off rubric generation in the
+    background (an LLM call) so this endpoint returns quickly. Note: only .pdf and
+    .docx have a text extractor (see pipeline/parser.py) — a .doc upload will save
+    fine here but fail extraction, so rubric generation won't run for it.
+    """
     _get_job_or_404(job_id)
     if not file.filename or not file.filename.lower().endswith((".pdf", ".doc", ".docx")):
         raise HTTPException(status_code=400, detail="Job description must be a PDF or Word document")
@@ -65,12 +71,19 @@ async def upload_jd(job_id: int, file: UploadFile = File(...)):
     content = await file.read()
     filename, path = storage.save_jd_file(job_id, file.filename, content)
 
+    try:
+        jd_text = parser.extract_text(str(path))
+    except parser.ParseError as exc:
+        raise HTTPException(status_code=400, detail=f"Couldn't read that file: {exc}") from exc
+
     with get_db() as conn:
         conn.execute(
-            "UPDATE jobs SET jd_filename = ?, jd_path = ?, status = 'active' WHERE id = ?",
-            (filename, str(path), job_id),
+            "UPDATE jobs SET jd_filename = ?, jd_path = ?, jd_text = ?, status = 'active' WHERE id = ?",
+            (filename, str(path), jd_text, job_id),
         )
         conn.commit()
+
+    background_tasks.add_task(rubric.generate_and_apply_rubric, job_id, jd_text)
 
     return {"jd_filename": filename}
 
@@ -147,6 +160,29 @@ async def upload_cvs(job_id: int, file: UploadFile = File(...)):
         conn.commit()
 
     return result
+
+
+@router.get("/{job_id}/rubric")
+async def get_rubric(job_id: int, version: int | None = None):
+    """Latest rubric for this job, or a specific version. 404 if none generated yet
+    (e.g. no JD uploaded, or generation is still running in the background)."""
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        if version is not None:
+            row = conn.execute(
+                "SELECT version, criteria_json FROM rubrics WHERE job_id = ? AND version = ?",
+                (job_id, version),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT version, criteria_json FROM rubrics WHERE job_id = ? ORDER BY version DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="No rubric generated yet for this job")
+
+    return {"version": row["version"], "criteria": json.loads(row["criteria_json"])}
 
 
 @router.get("/{job_id}/candidates")

@@ -5,6 +5,7 @@ import type {
   CvUploadResult,
   HealthResponse,
   Job,
+  Rubric,
   SessionStatusResponse,
   TrackerUploadResult,
 } from "./types";
@@ -82,6 +83,19 @@ export function uploadJD(jobId: number | string, file: File): Promise<{ jd_filen
   const form = new FormData();
   form.append("file", file);
   return authFetch(`/api/jobs/${jobId}/jd`, { method: "POST", body: form });
+}
+
+// Returns null while generation is still running (or hasn't started — no JD
+// uploaded yet), rather than treating "not found yet" as an error.
+export async function getRubric(jobId: number | string): Promise<Rubric | null> {
+  try {
+    return await authFetch<Rubric>(`/api/jobs/${jobId}/rubric`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      return null;
+    }
+    throw err;
+  }
 }
 
 export function uploadTracker(jobId: number | string, file: File): Promise<TrackerUploadResult> {

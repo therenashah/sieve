@@ -7,8 +7,8 @@ import CandidateTable from "@/components/CandidateTable";
 import FileUpload from "@/components/FileUpload";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
-import { ApiError, getJob, listCandidates, uploadCvs, uploadTracker } from "@/lib/api";
-import type { Candidate, CvUploadResult, Job, RowError } from "@/lib/types";
+import { ApiError, getJob, getRubric, listCandidates, uploadCvs, uploadTracker } from "@/lib/api";
+import type { Candidate, CvUploadResult, Job, Rubric, RowError } from "@/lib/types";
 
 function JobDetailInner() {
   const params = useParams<{ id: string }>();
@@ -17,15 +17,17 @@ function JobDetailInner() {
 
   const [job, setJob] = useState<Job | null>(null);
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [rubric, setRubric] = useState<Rubric | null>(null);
   const [error, setError] = useState("");
   const [rowErrors, setRowErrors] = useState<RowError[]>([]);
   const [cvResult, setCvResult] = useState<CvUploadResult | null>(null);
 
   const refresh = useCallback(() => {
-    Promise.all([getJob(jobId), listCandidates(jobId)])
-      .then(([j, c]) => {
+    Promise.all([getJob(jobId), listCandidates(jobId), getRubric(jobId)])
+      .then(([j, c, r]) => {
         setJob(j);
         setCandidates(c);
+        setRubric(r);
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
@@ -69,6 +71,44 @@ function JobDetailInner() {
               <p className="page-subtitle">{job.description || "No description provided."}</p>
             </div>
             <span className={`badge badge-${job.status}`}>{job.status}</span>
+          </div>
+        )}
+
+        {job && job.jd_filename && (
+          <div className="card">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <p className="section-label">
+                {rubric ? `Scoring rubric (v${rubric.version})` : "Scoring rubric"}
+              </p>
+              <button className="link-back" onClick={refresh}>
+                Refresh
+              </button>
+            </div>
+
+            {!rubric && (
+              <p className="page-subtitle">
+                Generating the scoring rubric from the uploaded JD — this runs in the background and
+                usually takes a few seconds. Click Refresh to check again.
+              </p>
+            )}
+
+            {rubric && (
+              <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.75rem" }}>
+                {[...rubric.criteria]
+                  .sort((a, b) => b.weight - a.weight)
+                  .map((c) => (
+                    <li key={c.id} style={{ borderBottom: "1px solid var(--border, #eee)", paddingBottom: "0.75rem" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+                        <strong>{c.name}</strong>
+                        <span>{(c.weight * 100).toFixed(0)}%</span>
+                      </div>
+                      <p className="page-subtitle" style={{ margin: 0 }}>
+                        {c.description}
+                      </p>
+                    </li>
+                  ))}
+              </ul>
+            )}
           </div>
         )}
 

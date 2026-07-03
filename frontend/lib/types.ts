@@ -37,6 +37,18 @@ export interface Job {
   cvs_matched?: number;
 }
 
+export interface Criterion {
+  id: string;
+  name: string;
+  description: string;
+  weight: number;
+}
+
+export interface Rubric {
+  version: number;
+  criteria: Criterion[];
+}
+
 export interface Candidate {
   id: number;
   job_id: number;
