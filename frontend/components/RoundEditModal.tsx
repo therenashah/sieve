@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { addRound, ApiError, updateRound } from "@/lib/api";
-import type { JobRound, RoundAIConfig, RoundTemplate } from "@/lib/types";
+import type { JobRound, RoundAIConfig, RoundDifficulty, RoundTemplate } from "@/lib/types";
 
 function defaultAIConfig(roundName: string, jobTitle: string): RoundAIConfig {
   return {
@@ -16,10 +16,22 @@ function defaultAIConfig(roundName: string, jobTitle: string): RoundAIConfig {
       `Conduct the ${roundName || "interview"} for the ${jobTitle} role. Ask clear, structured questions ` +
       "based on the job description and the candidate's profile, probe for depth on vague or evasive " +
       "answers, and stay professional and unbiased throughout.",
+    duration_minutes: 30,
+    difficulty: "balanced",
+    focus_areas: "",
+    allow_candidate_questions: true,
     store_transcript: true,
     store_recording: false,
     generate_scorecard: true,
     flag_inconsistencies: true,
+  };
+}
+
+// Older rounds may have been saved before these fields existed — backfill defaults.
+function withDefaults(config: RoundAIConfig): RoundAIConfig {
+  return {
+    ...defaultAIConfig("", ""),
+    ...config,
   };
 }
 
@@ -43,7 +55,9 @@ export default function RoundEditModal({
   const [description, setDescription] = useState(existingRound?.description ?? template?.description ?? "");
   const [isAiBased, setIsAiBased] = useState(existingRound?.is_ai_based ?? false);
   const [aiConfig, setAiConfig] = useState<RoundAIConfig>(
-    existingRound?.ai_config ?? defaultAIConfig(existingRound?.name ?? template?.name ?? "", jobTitle)
+    existingRound?.ai_config
+      ? withDefaults(existingRound.ai_config)
+      : defaultAIConfig(existingRound?.name ?? template?.name ?? "", jobTitle)
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -145,6 +159,54 @@ export default function RoundEditModal({
                   value={aiConfig.instructions}
                   onChange={(e) => updateField("instructions", e.target.value)}
                 />
+              </label>
+
+              <p className="section-label" style={{ margin: "0.9rem 0 0.4rem" }}>
+                Interview format
+              </p>
+              <div className="round-ai-grid">
+                <label className="field">
+                  <span>Approx. duration (minutes)</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={90}
+                    step={5}
+                    value={aiConfig.duration_minutes}
+                    onChange={(e) =>
+                      updateField("duration_minutes", Math.max(5, Math.min(90, Number(e.target.value) || 30)))
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>Difficulty</span>
+                  <select
+                    className="text-input"
+                    value={aiConfig.difficulty}
+                    onChange={(e) => updateField("difficulty", e.target.value as RoundDifficulty)}
+                  >
+                    <option value="easy">Easy</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </label>
+              </div>
+              <label className="field" style={{ marginTop: "0.9rem" }}>
+                <span>Focus areas (optional)</span>
+                <input
+                  type="text"
+                  value={aiConfig.focus_areas}
+                  placeholder="e.g. system design, ownership, incident response"
+                  onChange={(e) => updateField("focus_areas", e.target.value)}
+                />
+              </label>
+              <label className="round-ai-checkbox" style={{ marginTop: "0.6rem" }}>
+                <input
+                  type="checkbox"
+                  checked={aiConfig.allow_candidate_questions}
+                  onChange={(e) => updateField("allow_candidate_questions", e.target.checked as never)}
+                />
+                <span>Let the candidate ask questions before wrapping up</span>
               </label>
 
               <p className="section-label" style={{ margin: "0.9rem 0 0.4rem" }}>

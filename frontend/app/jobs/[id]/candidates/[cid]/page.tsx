@@ -5,8 +5,22 @@ import { useCallback, useEffect, useState } from "react";
 
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
-import { ApiError, getCandidateDetail, getScreeningAnswers } from "@/lib/api";
-import type { CandidateDetail, CandidateRound, ScreeningAnswer, ScreeningSessionSummary } from "@/lib/types";
+import {
+  ApiError,
+  getCandidateDetail,
+  getInterviewSessionDetail,
+  getScreeningAnswers,
+  interviewRecordingUrl,
+  listInterviewSessions,
+} from "@/lib/api";
+import type {
+  CandidateDetail,
+  CandidateRound,
+  InterviewSessionDetail,
+  InterviewSessionSummary,
+  ScreeningAnswer,
+  ScreeningSessionSummary,
+} from "@/lib/types";
 
 const ROUND_SUBTITLES: Record<string, string> = {
   resume_screening: "Match score & gate check",
@@ -73,6 +87,126 @@ function SessionTranscript({
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function InterviewSessionBlock({
+  jobId,
+  candidateId,
+  session,
+}: {
+  jobId: string;
+  candidateId: string;
+  session: InterviewSessionSummary;
+}) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<InterviewSessionDetail | null>(null);
+  const [error, setError] = useState("");
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && detail === null) {
+      getInterviewSessionDetail(jobId, candidateId, session.id)
+        .then(setDetail)
+        .catch(() => setError("Couldn't load this interview."));
+    }
+  }
+
+  const label =
+    session.status === "completed"
+      ? `Interview completed ${session.completed_at ? new Date(session.completed_at).toLocaleString() : ""}`
+      : `Interview ${session.status}${session.scheduled_at ? ` · ${new Date(session.scheduled_at).toLocaleString()}` : ""}`;
+
+  return (
+    <div className="transcript-block">
+      <button type="button" className="link-back" style={{ margin: 0 }} onClick={toggle}>
+        {open ? "▾" : "▸"} {label} — view transcript &amp; scorecard
+      </button>
+      {open && (
+        <div className="transcript-qa">
+          {error && <div className="alert alert-error">{error}</div>}
+          {!detail && !error && <p className="round-empty">Loading…</p>}
+          {detail && (
+            <>
+              {detail.scorecard?.recommendation && (
+                <p className="round-card-subtitle" style={{ margin: "0 0 0.5rem" }}>
+                  Recommendation: <strong>{detail.scorecard.recommendation.replace(/_/g, " ")}</strong>
+                  {detail.has_recording && (
+                    <>
+                      {" · "}
+                      <a href={interviewRecordingUrl(jobId, candidateId, detail.id)} target="_blank" rel="noreferrer">
+                        ▶ recording
+                      </a>
+                    </>
+                  )}
+                </p>
+              )}
+
+              {detail.scorecard?.competencies && detail.scorecard.competencies.length > 0 && (
+                <div style={{ marginBottom: "0.6rem" }}>
+                  {detail.scorecard.competencies.map((c, i) => (
+                    <div key={i} className="transcript-qa-item">
+                      <div className="transcript-qa-question">
+                        {c.name} — {c.rating}/5
+                      </div>
+                      <div className="transcript-qa-answer">{c.comment}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {detail.events.length > 0 && (
+                <p className="round-card-subtitle" style={{ margin: "0 0 0.5rem", color: "var(--warning-fg)" }}>
+                  Proctoring: {detail.events.map((e) => e.type).join(", ")}
+                </p>
+              )}
+
+              {detail.transcript.map((m, i) => (
+                <div key={i} className="transcript-qa-item">
+                  <div className="transcript-qa-question">
+                    {m.role === "assistant" ? "Interviewer" : "Candidate"}:
+                  </div>
+                  <div className="transcript-qa-answer">{m.content}</div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InterviewReview({
+  jobId,
+  candidateId,
+  roundKey,
+}: {
+  jobId: string;
+  candidateId: string;
+  roundKey: string;
+}) {
+  const [sessions, setSessions] = useState<InterviewSessionSummary[] | null>(null);
+
+  useEffect(() => {
+    listInterviewSessions(jobId, candidateId, roundKey)
+      .then(setSessions)
+      .catch(() => setSessions([]));
+  }, [jobId, candidateId, roundKey]);
+
+  if (!sessions || sessions.length === 0) return null;
+  return (
+    <div>
+      <p className="section-label" style={{ margin: "0.75rem 0 0.4rem" }}>
+        Interview sessions
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+        {sessions.map((s) => (
+          <InterviewSessionBlock key={s.id} jobId={jobId} candidateId={candidateId} session={s} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -247,6 +381,8 @@ function CandidateDetailInner() {
                         ))}
                       </div>
                     </div>
+                  ) : round.is_ai_based ? (
+                    <InterviewReview jobId={jobId} candidateId={candidateId} roundKey={round.round_key} />
                   ) : undefined
                 }
               />

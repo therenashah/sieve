@@ -232,6 +232,8 @@ export interface CandidateDetail extends Candidate {
 
 // ---------- round management ----------
 
+export type RoundDifficulty = "easy" | "balanced" | "hard";
+
 export interface RoundAIConfig {
   share_jd: boolean;
   share_profile: boolean;
@@ -239,6 +241,10 @@ export interface RoundAIConfig {
   share_previous_rounds: boolean;
   share_rubric: boolean;
   instructions: string;
+  duration_minutes: number;
+  difficulty: RoundDifficulty;
+  focus_areas: string;
+  allow_candidate_questions: boolean;
   store_transcript: boolean;
   store_recording: boolean;
   generate_scorecard: boolean;
@@ -262,6 +268,116 @@ export interface RoundTemplate {
   key: string;
   name: string;
   description: string;
+}
+
+// ---------- AI interview round ----------
+
+export interface TriggerInterviewResponse {
+  token: string;
+  interview_url: string;
+  expires_at: string;
+}
+
+export interface InterviewTurnMessage {
+  role: "assistant" | "candidate";
+  content: string;
+  audio_b64: string | null;
+}
+
+export type InterviewStatus =
+  | "invited"
+  | "scheduled"
+  | "in_progress"
+  | "completed"
+  | "expired";
+
+export interface InterviewStatusResponse {
+  status: InterviewStatus;
+  phase: string;
+  candidate_name: string;
+  job_title: string;
+  round_name: string;
+  instructions: string;
+  duration_minutes: number;
+  store_recording: boolean;
+  allow_candidate_questions: boolean;
+  scheduled_at: string | null;
+  expires_at: string;
+  slots: string[];
+  messages: InterviewTurnMessage[];
+  remaining_seconds: number | null;
+}
+
+export interface InterviewTurnResponse {
+  status: InterviewStatus;
+  phase: string;
+  messages: InterviewTurnMessage[];
+  remaining_seconds: number | null;
+  should_wrap_up: boolean;
+}
+
+export interface InterviewSessionSummary {
+  id: number;
+  token: string;
+  round_key: string;
+  status: InterviewStatus;
+  phase: string;
+  duration_minutes: number;
+  scheduled_at: string | null;
+  created_at: string;
+  expires_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  recording_path: string | null;
+  summary: string | null;
+  score: number | null;
+}
+
+export interface InterviewCompetency {
+  name: string;
+  rating: number;
+  comment: string;
+}
+
+export interface InterviewScorecard {
+  summary?: string;
+  score?: number;
+  recommendation?: string;
+  competencies?: InterviewCompetency[];
+  key_highlights?: string[];
+  flags?: RoundFlag[];
+}
+
+export interface InterviewTranscriptTurn {
+  role: "assistant" | "candidate";
+  content: string;
+  kind: string;
+  created_at: string;
+}
+
+export interface InterviewEvent {
+  type: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface InterviewSessionDetail {
+  id: number;
+  round_key: string;
+  status: InterviewStatus;
+  phase: string;
+  duration_minutes: number;
+  scheduled_at: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  score: number | null;
+  summary: string | null;
+  scorecard: InterviewScorecard | null;
+  plan: { competencies?: string[]; questions?: { topic: string; question: string }[] } | null;
+  has_recording: boolean;
+  transcript: InterviewTranscriptTurn[];
+  events: InterviewEvent[];
 }
 
 // ---------- leaderboard ----------

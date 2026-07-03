@@ -1593,3 +1593,296 @@ a {
   padding: 0.3rem 0;
   cursor: pointer;
 }
+
+/* ------------------------------------------------------------------ */
+/* AI interview round                                                 */
+/* ------------------------------------------------------------------ */
+
+.interview-page {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+/* pre-interview shells (schedule / lobby / end) */
+.interview-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.interview-card {
+  width: 100%;
+  max-width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: 2rem;
+}
+
+.interview-card-wide {
+  max-width: 860px;
+}
+
+.interview-card h1 {
+  margin: 1rem 0 0.5rem;
+  font-size: 1.4rem;
+}
+
+/* scheduling */
+.slot-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 1.25rem 0;
+}
+
+.slot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.slot-chip {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.slot-chip:hover {
+  border-color: var(--blue-500);
+}
+
+.slot-chip-active {
+  background: linear-gradient(135deg, var(--blue-500), var(--blue-600));
+  border-color: transparent;
+  color: #fff;
+}
+
+/* lobby */
+.lobby-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  margin: 1.25rem 0;
+}
+
+.lobby-video-wrap,
+.interview-video-col {
+  position: relative;
+}
+
+.lobby-video,
+.interview-video {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #0a1b3d;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  transform: scaleX(-1); /* mirror self-view */
+}
+
+.lobby-video-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: #cdd7ee;
+}
+
+.interview-tips {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.lobby-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+/* live interview */
+.interview-live {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.interview-topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.interview-topbar-meta {
+  display: flex;
+  gap: 0.4rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.interview-timer {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--neutral-bg);
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+}
+
+.interview-timer-warn {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.interview-wrap-banner {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  text-align: center;
+  padding: 0.5rem;
+  font-size: 0.88rem;
+}
+
+.interview-stage {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(340px, 1.3fr);
+  gap: 1.25rem;
+  padding: 1.25rem;
+  min-height: 0;
+}
+
+.interview-video-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.interviewer-orb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  align-self: center;
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  color: #fff;
+  background: linear-gradient(135deg, var(--blue-500), var(--navy-800));
+  box-shadow: var(--shadow-md);
+  transition: transform 0.2s ease;
+}
+
+.interviewer-orb small {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+
+.interviewer-orb-speaking {
+  animation: orb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes orb-pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(59, 111, 209, 0.5); }
+  50% { transform: scale(1.06); box-shadow: 0 0 0 14px rgba(59, 111, 209, 0); }
+}
+
+.interview-transcript-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.interview-transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.interview-hint {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-style: italic;
+  padding-left: 0.25rem;
+}
+
+.interview-answer {
+  border-top: 1px solid var(--border);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.interview-answer-input {
+  width: 100%;
+  resize: none;
+  border-radius: var(--radius-sm);
+}
+
+.interview-answer-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.interview-end-link {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding: 0.4rem 0.75rem 0.75rem;
+  cursor: pointer;
+  text-align: right;
+}
+
+.interview-end-link:hover {
+  color: var(--danger-fg);
+}
+
+/* recruiter round page config summary */
+.interview-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.interview-config-grid .section-label {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+@media (max-width: 780px) {
+  .lobby-grid,
+  .interview-stage {
+    grid-template-columns: 1fr;
+  }
+}

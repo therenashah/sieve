@@ -71,18 +71,26 @@ export default function RoundManagement({
         ))}
 
         {optionalRounds.map((r, i) => (
-          <div key={r.round_key} className="card round-card round-card-optional">
+          <div
+            key={r.round_key}
+            className={`card round-card round-card-optional${r.is_ai_based ? "" : " round-card-static"}`}
+            onClick={r.is_ai_based ? () => router.push(`/jobs/${jobId}/rounds/${r.round_key}`) : undefined}
+            style={r.is_ai_based ? { cursor: "pointer" } : undefined}
+          >
             <span className="round-card-number">{builtinRounds.length + i + 1}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="round-card-title">{r.name}</div>
               <div className="round-card-subtitle">
-                {r.is_ai_based ? "AI-based interview round" : "Manual round"}
+                {r.is_ai_based ? "AI interview · trigger & review" : "Manual round"}
               </div>
             </div>
             <button
               type="button"
               className="round-edit-icon"
-              onClick={() => setEditingRound(r)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditingRound(r);
+              }}
               aria-label={`Edit ${r.name}`}
             >
               ✎

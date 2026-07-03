@@ -6,6 +6,10 @@ import type {
   CvUploadResult,
   FilterSet,
   HealthResponse,
+  InterviewSessionDetail,
+  InterviewSessionSummary,
+  InterviewStatusResponse,
+  InterviewTurnResponse,
   Job,
   JobQuestion,
   JobRound,
@@ -19,6 +23,7 @@ import type {
   ScreeningAnswer,
   SessionStatusResponse,
   TrackerUploadResult,
+  TriggerInterviewResponse,
   TriggerScreeningResponse,
 } from "./types";
 
@@ -291,6 +296,96 @@ export async function deleteRound(jobId: number | string, roundId: number): Prom
   const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}/rounds/${roundId}`, {
     method: "DELETE",
     headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await toErrorMessage(response));
+  }
+}
+
+// ---------- AI interview round ----------
+
+// Recruiter: generate a tokenized invite link for an AI interview round.
+export function triggerInterview(
+  jobId: number | string,
+  candidateId: number | string,
+  roundKey: string
+): Promise<TriggerInterviewResponse> {
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/interview-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ round_key: roundKey }),
+  });
+}
+
+export function listInterviewSessions(
+  jobId: number | string,
+  candidateId: number | string,
+  roundKey?: string
+): Promise<InterviewSessionSummary[]> {
+  const qs = roundKey ? `?round_key=${encodeURIComponent(roundKey)}` : "";
+  return authFetch<InterviewSessionSummary[]>(
+    `/api/jobs/${jobId}/candidates/${candidateId}/interview-sessions${qs}`
+  );
+}
+
+export function getInterviewSessionDetail(
+  jobId: number | string,
+  candidateId: number | string,
+  sessionId: number | string
+): Promise<InterviewSessionDetail> {
+  return authFetch<InterviewSessionDetail>(
+    `/api/jobs/${jobId}/candidates/${candidateId}/interview-sessions/${sessionId}`
+  );
+}
+
+export function interviewRecordingUrl(
+  jobId: number | string,
+  candidateId: number | string,
+  sessionId: number | string
+): string {
+  return `${API_BASE_URL}/api/jobs/${jobId}/candidates/${candidateId}/interview-sessions/${sessionId}/recording`;
+}
+
+// Candidate-facing (token only, no auth):
+export function getInterview(token: string): Promise<InterviewStatusResponse> {
+  return apiFetch<InterviewStatusResponse>(`/api/interview/${token}`);
+}
+
+export function scheduleInterview(token: string, slot: string): Promise<{ scheduled_at: string }> {
+  return apiFetch(`/api/interview/${token}/schedule`, {
+    method: "POST",
+    body: JSON.stringify({ slot }),
+  });
+}
+
+export function startInterview(token: string): Promise<InterviewTurnResponse> {
+  return apiFetch<InterviewTurnResponse>(`/api/interview/${token}/start`, { method: "POST" });
+}
+
+export function sendInterviewMessage(token: string, message: string): Promise<InterviewTurnResponse> {
+  return apiFetch<InterviewTurnResponse>(`/api/interview/${token}/message`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
+export function endInterview(token: string): Promise<InterviewTurnResponse> {
+  return apiFetch<InterviewTurnResponse>(`/api/interview/${token}/end`, { method: "POST" });
+}
+
+export function logInterviewEvent(token: string, type: string, detail = ""): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/interview/${token}/event`, {
+    method: "POST",
+    body: JSON.stringify({ type, detail }),
+  });
+}
+
+export async function uploadInterviewRecording(token: string, blob: Blob): Promise<void> {
+  const form = new FormData();
+  form.append("file", blob, "interview.webm");
+  const response = await fetch(`${API_BASE_URL}/api/interview/${token}/recording`, {
+    method: "POST",
+    body: form,
   });
   if (!response.ok) {
     throw new ApiError(response.status, await toErrorMessage(response));
