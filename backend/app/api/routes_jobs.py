@@ -605,18 +605,16 @@ async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: Bac
 
 
 def _compute_pipeline_statuses(conn, job_id: int) -> dict[int, str]:
-    """Plain-English pipeline status per candidate: 'Not started', 'R1 completed',
-    'R2 pending', 'All rounds completed'. Mirrors get_leaderboard's per-candidate status
-    logic exactly (kept as a standalone helper rather than refactoring that endpoint, to
-    avoid touching its already-tested code) so both pages show the same value for the
-    same candidate rather than two different homegrown status concepts.
+    """Plain-English pipeline status per candidate -- delegates to pipeline_status_label,
+    the single source of truth also used by the leaderboard and candidate detail
+    endpoints (see _compute_leaderboard / get_candidate_detail), so every view of a
+    candidate's pipeline progress agrees rather than drifting into separate homegrown
+    status concepts.
     """
     round_defs = conn.execute(
         "SELECT round_key FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
     ).fetchall()
     rounds = [r["round_key"] for r in round_defs]
-    if not rounds:
-        return {}
 
     scores_by_candidate: dict[int, dict[str, int | None]] = {}
     for row in conn.execute(
@@ -626,34 +624,12 @@ def _compute_pipeline_statuses(conn, job_id: int) -> dict[int, str]:
     ).fetchall():
         scores_by_candidate.setdefault(row["candidate_id"], {})[row["round"]] = row["score"]
 
-    has_active_session = {
-        row["candidate_id"]
-        for row in conn.execute(
-            "SELECT DISTINCT candidate_id FROM screening_sessions WHERE job_id = ? AND status = 'active'",
-            (job_id,),
-        ).fetchall()
-    }
-
     statuses: dict[int, str] = {}
     for row in conn.execute("SELECT id FROM candidates WHERE job_id = ?", (job_id,)).fetchall():
         cid = row["id"]
         cand_scores = scores_by_candidate.get(cid, {})
-        completed_count = 0
-        first_incomplete_key = None
-        for rk in rounds:
-            if cand_scores.get(rk) is not None:
-                completed_count += 1
-            elif first_incomplete_key is None:
-                first_incomplete_key = rk
-
-        if completed_count == len(rounds):
-            statuses[cid] = "All rounds completed"
-        elif first_incomplete_key == "hr_screening" and cid in has_active_session:
-            statuses[cid] = f"R{completed_count + 1} pending"
-        elif completed_count > 0:
-            statuses[cid] = f"R{completed_count} completed"
-        else:
-            statuses[cid] = "Not started"
+        completed_count = sum(1 for rk in rounds if cand_scores.get(rk) is not None)
+        statuses[cid] = pipeline_status_label(completed_count, len(rounds))
     return statuses
 
 
