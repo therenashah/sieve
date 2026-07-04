@@ -8,11 +8,13 @@ import RequireAuth from "@/components/RequireAuth";
 import {
   ApiError,
   getCandidateDetail,
+  getCandidateResume,
   getInterviewSessionDetail,
   getScreeningAnswers,
   interviewRecordingUrl,
   listInterviewSessions,
 } from "@/lib/api";
+import { statusBadgeClass } from "@/lib/status";
 import type {
   CandidateDetail,
   CandidateRound,
@@ -379,6 +381,20 @@ function CandidateDetailInner() {
 
   const [candidate, setCandidate] = useState<CandidateDetail | null>(null);
   const [error, setError] = useState("");
+  const [resumeLoading, setResumeLoading] = useState(false);
+
+  async function handleViewResume() {
+    setResumeLoading(true);
+    setError("");
+    try {
+      const { blob } = await getCandidateResume(jobId, candidateId);
+      window.open(URL.createObjectURL(blob), "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't open this candidate's resume.");
+    } finally {
+      setResumeLoading(false);
+    }
+  }
 
   const refresh = useCallback(() => {
     getCandidateDetail(jobId, candidateId)
@@ -427,9 +443,16 @@ function CandidateDetailInner() {
                   )}
                 </div>
               </div>
-              <span className="badge badge-neutral" style={{ marginLeft: "auto" }}>
-                {candidate.overall_status || "No status"}
-              </span>
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                {candidate.resume_path && (
+                  <button className="btn btn-small btn-secondary" onClick={handleViewResume} disabled={resumeLoading}>
+                    {resumeLoading ? "Opening…" : "View resume"}
+                  </button>
+                )}
+                <span className={`badge ${statusBadgeClass(candidate.pipeline_status)}`}>
+                  {candidate.pipeline_status}
+                </span>
+              </div>
             </div>
 
             {candidate.rounds.map((round, i) => (

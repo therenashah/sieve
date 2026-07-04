@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     jd_text TEXT NOT NULL DEFAULT '',   -- raw JD text; resume-screening pipeline reads this directly
     jd_filename TEXT,
     jd_path TEXT,
-    status TEXT NOT NULL DEFAULT 'draft',   -- draft | active
+    status TEXT NOT NULL DEFAULT 'draft',   -- draft | active | archived
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS candidates (
     status TEXT DEFAULT 'PARSING',   -- PARSING | SCORING | SCORED | ERROR (resume-screening pipeline state)
     error_reason TEXT,
     -- HR's resume-screening decision (distinct from the tracker-imported *_status columns
-    -- below, which get overwritten on every tracker re-sync). NULL | 'rejected'. Reversible.
+    -- below, which get overwritten on every tracker re-sync). NULL | 'rejected' |
+    -- 'shortlisted'. Reversible, mutually exclusive (setting one clears the other).
     screening_decision TEXT,
     -- Seniority-mismatch flag from scoring: candidate's recent experience reads as more
     -- senior than this role. Does not affect rank/overall score, just an extra signal.

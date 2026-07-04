@@ -99,6 +99,24 @@ export function getJob(jobId: number | string): Promise<Job> {
   return authFetch<Job>(`/api/jobs/${jobId}`);
 }
 
+export function archiveJob(jobId: number | string): Promise<Job> {
+  return authFetch<Job>(`/api/jobs/${jobId}/archive`, { method: "POST" });
+}
+
+export function unarchiveJob(jobId: number | string): Promise<Job> {
+  return authFetch<Job>(`/api/jobs/${jobId}/unarchive`, { method: "POST" });
+}
+
+export async function deleteJob(jobId: number | string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await toErrorMessage(response));
+  }
+}
+
 export function createJob(title: string, description: string): Promise<Job> {
   const form = new FormData();
   form.append("title", title);
@@ -162,6 +180,20 @@ export function unrejectCandidate(
   candidateId: number,
 ): Promise<{ candidate_id: number; screening_decision: string | null }> {
   return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/unreject`, { method: "POST" });
+}
+
+export function shortlistCandidate(
+  jobId: number | string,
+  candidateId: number,
+): Promise<{ candidate_id: number; screening_decision: string | null }> {
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/shortlist`, { method: "POST" });
+}
+
+export function unshortlistCandidate(
+  jobId: number | string,
+  candidateId: number,
+): Promise<{ candidate_id: number; screening_decision: string | null }> {
+  return authFetch(`/api/jobs/${jobId}/candidates/${candidateId}/unshortlist`, { method: "POST" });
 }
 
 export function scanCandidates(jobId: number | string): Promise<ScanResponse> {
@@ -341,6 +373,45 @@ export function getInterviewSessionDetail(
   return authFetch<InterviewSessionDetail>(
     `/api/jobs/${jobId}/candidates/${candidateId}/interview-sessions/${sessionId}`
   );
+}
+
+// All /api/jobs routes require a bearer token, so the resume can't be a plain <a href> --
+// (unlike a same-origin unauthenticated download) it has to be fetched with the auth
+// header and opened as a blob URL.
+export async function getCandidateResume(
+  jobId: number | string,
+  candidateId: number | string,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}/candidates/${candidateId}/resume`, {
+    headers: authHeaders(),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await toErrorMessage(response));
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : "resume";
+  const blob = await response.blob();
+  return { blob, filename };
+}
+
+export async function exportCandidates(
+  jobId: number | string,
+  candidateIds: number[],
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}/candidates/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ candidate_ids: candidateIds }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await toErrorMessage(response));
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : "candidates.xlsx";
+  const blob = await response.blob();
+  return { blob, filename };
 }
 
 export function interviewRecordingUrl(

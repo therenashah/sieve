@@ -12,6 +12,7 @@ what keeps a 50-100 CV batch fast.
 import difflib
 import io
 import re
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -39,6 +40,13 @@ def candidates_dir(job_id: int) -> Path:
     path = job_dir(job_id) / "candidates"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def delete_job_dir(job_id: int) -> None:
+    """Remove everything on disk for a job (JD file, CVs, interview recordings) — the
+    DB side of a job delete cascades via foreign keys, but files aren't part of that."""
+    path = _storage_root() / str(job_id)
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def save_jd_file(job_id: int, original_filename: str, content: bytes) -> tuple[str, Path]:

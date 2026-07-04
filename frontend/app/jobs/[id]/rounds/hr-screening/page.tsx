@@ -1,13 +1,14 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import CandidateTable from "@/components/CandidateTable";
+import Leaderboard from "@/components/Leaderboard";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
-import { ApiError, getJob, listCandidates } from "@/lib/api";
-import type { Candidate, Job } from "@/lib/types";
+import TriggerScreeningModal from "@/components/TriggerScreeningModal";
+import { ApiError, getJob, getLeaderboard } from "@/lib/api";
+import type { Job, LeaderboardCandidate, LeaderboardResponse } from "@/lib/types";
 
 function HrScreeningRoundInner() {
   const params = useParams<{ id: string }>();
@@ -15,14 +16,15 @@ function HrScreeningRoundInner() {
   const router = useRouter();
 
   const [job, setJob] = useState<Job | null>(null);
-  const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [error, setError] = useState("");
+  const [triggerFor, setTriggerFor] = useState<LeaderboardCandidate | null>(null);
 
-  useEffect(() => {
-    Promise.all([getJob(jobId), listCandidates(jobId)])
-      .then(([j, c]) => {
+  const refresh = useCallback(() => {
+    return Promise.all([getJob(jobId), getLeaderboard(jobId)])
+      .then(([j, lb]) => {
         setJob(j);
-        setCandidates(c.candidates);
+        setLeaderboard(lb);
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
@@ -32,6 +34,10 @@ function HrScreeningRoundInner() {
         setError("Couldn't load this round.");
       });
   }, [jobId, router]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   return (
     <>
@@ -53,20 +59,32 @@ function HrScreeningRoundInner() {
 
         {error && <div className="alert alert-error">{error}</div>}
 
-        {candidates && candidates.length > 0 && (
-          <CandidateTable
-            candidates={candidates}
-            showScreeningAction
+        {leaderboard && leaderboard.candidates.length > 0 && (
+          <Leaderboard
+            data={leaderboard}
+            jobId={jobId}
             onRowClick={(c) => router.push(`/jobs/${jobId}/candidates/${c.id}`)}
+            onRefresh={refresh}
+            rowAction={{ label: "Trigger HR screening", onClick: (c) => setTriggerFor(c) }}
+            readOnly={job?.status === "archived"}
           />
         )}
 
-        {candidates && candidates.length === 0 && (
+        {leaderboard && leaderboard.candidates.length === 0 && (
           <div className="empty-state">
             <p>No candidates yet.</p>
           </div>
         )}
       </main>
+
+      {triggerFor && (
+        <TriggerScreeningModal
+          jobId={jobId}
+          candidateId={triggerFor.id}
+          candidateName={triggerFor.name}
+          onClose={() => setTriggerFor(null)}
+        />
+      )}
     </>
   );
 }

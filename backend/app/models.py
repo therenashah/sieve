@@ -210,6 +210,10 @@ class TriggerScreeningRequest(BaseModel):
     question_ids: list[int] = Field(default_factory=list)
 
 
+class ExportCandidatesRequest(BaseModel):
+    candidate_ids: list[int]
+
+
 class TriggerScreeningResponse(BaseModel):
     token: str
     chat_url: str

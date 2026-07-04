@@ -1,13 +1,14 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
+import Leaderboard from "@/components/Leaderboard";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
 import TriggerInterviewModal from "@/components/TriggerInterviewModal";
-import { ApiError, getJob, listCandidates, listRounds } from "@/lib/api";
-import type { Candidate, Job, JobRound } from "@/lib/types";
+import { ApiError, getJob, getLeaderboard, listRounds } from "@/lib/api";
+import type { Job, JobRound, LeaderboardCandidate, LeaderboardResponse } from "@/lib/types";
 
 function InterviewRoundInner() {
   const params = useParams<{ id: string; roundKey: string }>();
@@ -17,16 +18,16 @@ function InterviewRoundInner() {
 
   const [job, setJob] = useState<Job | null>(null);
   const [round, setRound] = useState<JobRound | null>(null);
-  const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [error, setError] = useState("");
-  const [triggerFor, setTriggerFor] = useState<Candidate | null>(null);
+  const [triggerFor, setTriggerFor] = useState<LeaderboardCandidate | null>(null);
 
-  useEffect(() => {
-    Promise.all([getJob(jobId), listRounds(jobId), listCandidates(jobId)])
-      .then(([j, rounds, c]) => {
+  const refresh = useCallback(() => {
+    return Promise.all([getJob(jobId), listRounds(jobId), getLeaderboard(jobId)])
+      .then(([j, rounds, lb]) => {
         setJob(j);
         setRound(rounds.find((r) => r.round_key === roundKey) ?? null);
-        setCandidates(c.candidates);
+        setLeaderboard(lb);
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
@@ -36,6 +37,10 @@ function InterviewRoundInner() {
         setError("Couldn't load this round.");
       });
   }, [jobId, roundKey, router]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   const cfg = round?.ai_config;
 
@@ -91,55 +96,22 @@ function InterviewRoundInner() {
 
         {error && <div className="alert alert-error">{error}</div>}
 
-        {candidates && candidates.length > 0 && (
-          <div className="table-scroll">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Candidate</th>
-                  <th>ID</th>
-                  <th>Match score</th>
-                  <th>Resume</th>
-                  <th>{round?.name ?? "Interview"}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {candidates.map((c) => (
-                  <tr
-                    key={c.id}
-                    onClick={() => router.push(`/jobs/${jobId}/candidates/${c.id}`)}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <td>
-                      <div className="cand-name">{c.name}</div>
-                      <div className="cand-email">{c.email}</div>
-                    </td>
-                    <td>{c.external_id ?? "—"}</td>
-                    <td>{c.match_score != null ? c.match_score : "—"}</td>
-                    <td>
-                      {c.resume_path ? (
-                        <span className="badge badge-success">On file</span>
-                      ) : (
-                        <span className="badge badge-warning">Missing</span>
-                      )}
-                    </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <button
-                        className="btn btn-small btn-primary"
-                        disabled={!round?.is_ai_based}
-                        onClick={() => setTriggerFor(c)}
-                      >
-                        Generate interview link
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {leaderboard && leaderboard.candidates.length > 0 && (
+          <Leaderboard
+            data={leaderboard}
+            jobId={jobId}
+            onRowClick={(c) => router.push(`/jobs/${jobId}/candidates/${c.id}`)}
+            onRefresh={refresh}
+            rowAction={{
+              label: "Generate interview link",
+              onClick: (c) => setTriggerFor(c),
+              disabled: () => !round?.is_ai_based,
+            }}
+            readOnly={job?.status === "archived"}
+          />
         )}
 
-        {candidates && candidates.length === 0 && (
+        {leaderboard && leaderboard.candidates.length === 0 && (
           <div className="empty-state">
             <p>No candidates yet.</p>
           </div>

@@ -15,6 +15,7 @@ from app.models import (
     AddQuestionRequest,
     AddRoundRequest,
     Criterion,
+    ExportCandidatesRequest,
     FilterParseRequest,
     FilterSet,
     RoundAIConfig,
@@ -50,6 +51,26 @@ def _get_job_or_404(job_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     return dict(row)
+
+
+def _require_active_job(job: dict) -> None:
+    """Archiving freezes a posting in place -- blocks anything that would change its
+    data, rather than just hiding it from the active list."""
+    if job["status"] == "archived":
+        raise HTTPException(status_code=400, detail="This posting is archived. Unarchive it to make changes.")
+
+
+def pipeline_status_label(completed_count: int, total_rounds: int) -> str:
+    """Single source of truth for a candidate's pipeline status label -- called by both
+    the leaderboard and candidate detail endpoints so they never disagree for the same
+    candidate. Always phrased as "what's next": R1 pending before anything is done,
+    incrementing as rounds complete, until every configured round has a score.
+    """
+    if total_rounds == 0:
+        return "No rounds configured"
+    if completed_count >= total_rounds:
+        return "All rounds completed"
+    return f"R{completed_count + 1} pending"
 
 
 @router.get("")
@@ -98,6 +119,43 @@ async def get_job(job_id: int):
     return _get_job_or_404(job_id)
 
 
+@router.post("/{job_id}/archive")
+async def archive_job(job_id: int):
+    """Freeze a posting: hides it from the active list and blocks further mutation
+    (uploads, scans, triggers, round/candidate changes) until unarchived. Reversible,
+    and doesn't touch any data — see DELETE for that."""
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        conn.execute("UPDATE jobs SET status = 'archived' WHERE id = ?", (job_id,))
+        conn.commit()
+    return _get_job_or_404(job_id)
+
+
+@router.post("/{job_id}/unarchive")
+async def unarchive_job(job_id: int):
+    """Undo /archive, restoring the posting to normal (active) use."""
+    job = _get_job_or_404(job_id)
+    if job["status"] == "archived":
+        with get_db() as conn:
+            conn.execute("UPDATE jobs SET status = 'active' WHERE id = ?", (job_id,))
+            conn.commit()
+    return _get_job_or_404(job_id)
+
+
+@router.delete("/{job_id}", status_code=204)
+async def delete_job(job_id: int):
+    """Permanently delete a posting and everything under it: candidates, rounds,
+    rubrics, screening/interview sessions and their transcripts/recordings. Foreign keys
+    (PRAGMA foreign_keys = ON, see db.py) cascade the DB side; files on disk (JD,
+    matched CVs, interview recordings) are removed separately since they aren't rows."""
+    _get_job_or_404(job_id)
+    with get_db() as conn:
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+    storage.delete_job_dir(job_id)
+    return None
+
+
 @router.post("/{job_id}/jd")
 async def upload_jd(job_id: int, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Saves the JD file, extracts its text, and kicks off rubric generation in the
@@ -105,7 +163,7 @@ async def upload_jd(job_id: int, background_tasks: BackgroundTasks, file: Upload
     .docx have a text extractor (see pipeline/parser.py) — a .doc upload will save
     fine here but fail extraction, so rubric generation won't run for it.
     """
-    _get_job_or_404(job_id)
+    _require_active_job(_get_job_or_404(job_id))
     if not file.filename or not file.filename.lower().endswith((".pdf", ".doc", ".docx")):
         raise HTTPException(status_code=400, detail="Job description must be a PDF or Word document")
 
@@ -132,7 +190,7 @@ async def upload_jd(job_id: int, background_tasks: BackgroundTasks, file: Upload
 
 @router.post("/{job_id}/tracker")
 async def upload_tracker(job_id: int, file: UploadFile = File(...)):
-    _get_job_or_404(job_id)
+    _require_active_job(_get_job_or_404(job_id))
     if not file.filename or not file.filename.lower().endswith((".csv", ".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="Candidate tracker must be a .csv or .xlsx file")
 
@@ -178,7 +236,7 @@ async def upload_tracker(job_id: int, file: UploadFile = File(...)):
 
 @router.post("/{job_id}/cvs")
 async def upload_cvs(job_id: int, file: UploadFile = File(...)):
-    _get_job_or_404(job_id)
+    _require_active_job(_get_job_or_404(job_id))
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="CVs must be uploaded as a single .zip file")
 
@@ -209,7 +267,7 @@ async def scan_candidates(job_id: int, background_tasks: BackgroundTasks):
     """Kick off resume text extraction, profile extraction, and scoring (against the
     latest rubric) for this job's candidates. Runs in the background; poll
     GET /{job_id}/candidates for per-candidate status as it progresses."""
-    _get_job_or_404(job_id)
+    _require_active_job(_get_job_or_404(job_id))
     with get_db() as conn:
         rubric_row = conn.execute(
             "SELECT id FROM rubrics WHERE job_id = ? ORDER BY version DESC LIMIT 1", (job_id,)
@@ -419,6 +477,7 @@ async def list_round_templates(job_id: int):
 @router.post("/{job_id}/rounds", status_code=201)
 async def add_round(job_id: int, body: AddRoundRequest):
     job = _get_job_or_404(job_id)
+    _require_active_job(job)
     template = next((t for t in ROUND_TEMPLATES if t["key"] == body.template_key), None)
     if template is None:
         raise HTTPException(status_code=400, detail=f"Unknown round template '{body.template_key}'")
@@ -460,7 +519,7 @@ async def add_round(job_id: int, body: AddRoundRequest):
 
 @router.put("/{job_id}/rounds/{round_id}")
 async def update_round(job_id: int, round_id: int, body: UpdateRoundRequest):
-    _get_job_or_404(job_id)
+    _require_active_job(_get_job_or_404(job_id))
     with get_db() as conn:
         existing = conn.execute(
             "SELECT * FROM job_rounds WHERE id = ? AND job_id = ?", (round_id, job_id)
@@ -485,7 +544,16 @@ async def update_round(job_id: int, round_id: int, body: UpdateRoundRequest):
 
 @router.delete("/{job_id}/rounds/{round_id}", status_code=204)
 async def delete_round(job_id: int, round_id: int):
-    _get_job_or_404(job_id)
+    """Remove an optional round and everything recorded against it -- its scores, and
+    (for AI interview rounds) every interview session, transcript, and recording file.
+    Built-in rounds (resume_screening, hr_screening) can't be removed at all -- the rest
+    of the app assumes they always exist. Once gone, the round's template becomes
+    available again in the "add round" list (list_round_templates filters live off
+    job_rounds, so this needs no extra bookkeeping) -- but a fresh add gets a clean
+    slate rather than reattaching to this round's old sessions, which is exactly why
+    those sessions are purged here rather than left as round_key-matched orphans.
+    """
+    _require_active_job(_get_job_or_404(job_id))
     with get_db() as conn:
         row = conn.execute(
             "SELECT is_builtin, round_key FROM job_rounds WHERE id = ? AND job_id = ?", (round_id, job_id)
@@ -494,11 +562,21 @@ async def delete_round(job_id: int, round_id: int):
             raise HTTPException(status_code=404, detail="Round not found")
         if row["is_builtin"]:
             raise HTTPException(status_code=400, detail="Built-in rounds can't be removed")
+
+        recording_rows = conn.execute(
+            """SELECT recording_path FROM interview_sessions
+               WHERE job_id = ? AND round_key = ? AND recording_path IS NOT NULL""",
+            (job_id, row["round_key"]),
+        ).fetchall()
+        for r in recording_rows:
+            (storage.candidates_dir(job_id) / r["recording_path"]).unlink(missing_ok=True)
+
         conn.execute(
             """DELETE FROM round_results WHERE round = ? AND candidate_id IN
                (SELECT id FROM candidates WHERE job_id = ?)""",
             (row["round_key"], job_id),
         )
+        conn.execute("DELETE FROM interview_sessions WHERE job_id = ? AND round_key = ?", (job_id, row["round_key"]))
         conn.execute("DELETE FROM job_rounds WHERE id = ?", (round_id,))
         conn.commit()
     return None
@@ -509,7 +587,7 @@ async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: Bac
     """Persist a proposed rubric (manual HR edits, or a fine-tune chat proposal) as the
     next version. If candidates were already scanned, kicks off a selective re-score in
     the background for just the added/edited criteria — untouched criteria carry forward."""
-    _get_job_or_404(job_id)
+    _require_active_job(_get_job_or_404(job_id))
     result = rubric.apply_rubric(job_id, proposed)
 
     rescoring = False
@@ -539,18 +617,16 @@ async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: Bac
 
 
 def _compute_pipeline_statuses(conn, job_id: int) -> dict[int, str]:
-    """Plain-English pipeline status per candidate: 'Not started', 'R1 completed',
-    'R2 pending', 'All rounds completed'. Mirrors get_leaderboard's per-candidate status
-    logic exactly (kept as a standalone helper rather than refactoring that endpoint, to
-    avoid touching its already-tested code) so both pages show the same value for the
-    same candidate rather than two different homegrown status concepts.
+    """Plain-English pipeline status per candidate -- delegates to pipeline_status_label,
+    the single source of truth also used by the leaderboard and candidate detail
+    endpoints (see _compute_leaderboard / get_candidate_detail), so every view of a
+    candidate's pipeline progress agrees rather than drifting into separate homegrown
+    status concepts.
     """
     round_defs = conn.execute(
         "SELECT round_key FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
     ).fetchall()
     rounds = [r["round_key"] for r in round_defs]
-    if not rounds:
-        return {}
 
     scores_by_candidate: dict[int, dict[str, int | None]] = {}
     for row in conn.execute(
@@ -560,34 +636,12 @@ def _compute_pipeline_statuses(conn, job_id: int) -> dict[int, str]:
     ).fetchall():
         scores_by_candidate.setdefault(row["candidate_id"], {})[row["round"]] = row["score"]
 
-    has_active_session = {
-        row["candidate_id"]
-        for row in conn.execute(
-            "SELECT DISTINCT candidate_id FROM screening_sessions WHERE job_id = ? AND status = 'active'",
-            (job_id,),
-        ).fetchall()
-    }
-
     statuses: dict[int, str] = {}
     for row in conn.execute("SELECT id FROM candidates WHERE job_id = ?", (job_id,)).fetchall():
         cid = row["id"]
         cand_scores = scores_by_candidate.get(cid, {})
-        completed_count = 0
-        first_incomplete_key = None
-        for rk in rounds:
-            if cand_scores.get(rk) is not None:
-                completed_count += 1
-            elif first_incomplete_key is None:
-                first_incomplete_key = rk
-
-        if completed_count == len(rounds):
-            statuses[cid] = "All rounds completed"
-        elif first_incomplete_key == "hr_screening" and cid in has_active_session:
-            statuses[cid] = f"R{completed_count + 1} pending"
-        elif completed_count > 0:
-            statuses[cid] = f"R{completed_count} completed"
-        else:
-            statuses[cid] = "Not started"
+        completed_count = sum(1 for rk in rounds if cand_scores.get(rk) is not None)
+        statuses[cid] = pipeline_status_label(completed_count, len(rounds))
     return statuses
 
 
@@ -672,15 +726,10 @@ async def list_candidates(job_id: int, filter: str | None = Query(default=None),
     return {"rubric_version": rubric_row["version"], "candidates": candidates, "unparsed": unparsed}
 
 
-@router.get("/{job_id}/leaderboard")
-async def get_leaderboard(job_id: int):
-    """The master performance view for a job: every candidate, their score in each
-    configured round (or null if that round hasn't produced one for them yet), an
-    overall average across rounds with a score, a plain-English pipeline status, and a
-    funnel count of how many candidates have cleared each round — everything the
-    candidate table + funnel chart on the job page need in one call.
-    """
-    _get_job_or_404(job_id)
+def _compute_leaderboard(job_id: int) -> dict:
+    """Shared by GET /{job_id}/leaderboard and POST /{job_id}/candidates/export --
+    one computation so the table, the analytics tiles, and the exported spreadsheet
+    can never disagree about a candidate's score/status/decision."""
     with get_db() as conn:
         round_defs = conn.execute(
             "SELECT * FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
@@ -693,16 +742,11 @@ async def get_leaderboard(job_id: int):
                JOIN candidates c ON c.id = rr.candidate_id WHERE c.job_id = ?""",
             (job_id,),
         ).fetchall()
-        active_session_rows = conn.execute(
-            "SELECT DISTINCT candidate_id FROM screening_sessions WHERE job_id = ? AND status = 'active'",
-            (job_id,),
-        ).fetchall()
 
     rounds = [{"round_key": r["round_key"], "name": r["name"]} for r in round_defs]
     scores_by_candidate: dict[int, dict[str, int | None]] = {}
     for row in result_rows:
         scores_by_candidate.setdefault(row["candidate_id"], {})[row["round"]] = row["score"]
-    has_active_session = {row["candidate_id"] for row in active_session_rows}
 
     leaderboard = []
     funnel_counts = {r["round_key"]: 0 for r in rounds}
@@ -711,30 +755,16 @@ async def get_leaderboard(job_id: int):
         cand_scores = scores_by_candidate.get(cand["id"], {})
         round_scores = []
         completed_count = 0
-        first_incomplete_key = None
         for r in rounds:
             score = cand_scores.get(r["round_key"])
             round_scores.append({"round_key": r["round_key"], "score": score})
             if score is not None:
                 completed_count += 1
                 funnel_counts[r["round_key"]] += 1
-            elif first_incomplete_key is None:
-                first_incomplete_key = r["round_key"]
 
         numeric_scores = [s["score"] for s in round_scores if s["score"] is not None]
         overall = round(sum(numeric_scores) / len(numeric_scores), 1) if numeric_scores else None
-
-        # Only "hr_screening" has an active trigger/session mechanism today, so an active
-        # session only counts as "pending" when it's specifically the next round due —
-        # otherwise (e.g. a stray/expired session for a different round) don't misattribute it.
-        if rounds and completed_count == len(rounds):
-            status = "All rounds completed"
-        elif first_incomplete_key == "hr_screening" and cand["id"] in has_active_session:
-            status = f"R{completed_count + 1} pending"
-        elif completed_count > 0:
-            status = f"R{completed_count} completed"
-        else:
-            status = "Not started"
+        status = pipeline_status_label(completed_count, len(rounds))
 
         leaderboard.append(
             {
@@ -749,6 +779,7 @@ async def get_leaderboard(job_id: int):
                 "round_scores": round_scores,
                 "overall": overall,
                 "status": status,
+                "screening_decision": cand["screening_decision"],
             }
         )
 
@@ -762,6 +793,66 @@ async def get_leaderboard(job_id: int):
         "funnel": funnel,
         "total_candidates": len(cand_rows),
     }
+
+
+@router.get("/{job_id}/leaderboard")
+async def get_leaderboard(job_id: int):
+    """The master performance view for a job: every candidate, their score in each
+    configured round (or null if that round hasn't produced one for them yet), an
+    overall average across rounds with a score, a plain-English pipeline status, and a
+    funnel count of how many candidates have cleared each round — everything the
+    candidate table + funnel chart on the job page need in one call.
+    """
+    _get_job_or_404(job_id)
+    return _compute_leaderboard(job_id)
+
+
+@router.post("/{job_id}/candidates/export")
+async def export_candidates(job_id: int, body: ExportCandidatesRequest):
+    """Export exactly the candidate rows (and order) the recruiter has on screen --
+    the frontend sends the current sorted/filtered id list from the leaderboard table
+    -- as an .xlsx, reusing the same computed status/decision/score data as the
+    leaderboard so the export always matches what's visible."""
+    import io
+
+    import pandas as pd
+    from fastapi.responses import StreamingResponse
+
+    job = _get_job_or_404(job_id)
+    lb = _compute_leaderboard(job_id)
+    by_id = {c["id"]: c for c in lb["candidates"]}
+    ordered = [by_id[cid] for cid in body.candidate_ids if cid in by_id]
+    if not ordered:
+        raise HTTPException(status_code=400, detail="No matching candidates to export")
+
+    round_names = {r["round_key"]: r["name"] for r in lb["rounds"]}
+    rows = []
+    for c in ordered:
+        row = {
+            "Name": c["name"],
+            "Email": c["email"],
+            "External ID": c["external_id"] or "",
+            "Source": c["source_type"] or "",
+            "Applied": c["application_date"] or "",
+            "Status": c["status"],
+            "Decision": (c["screening_decision"] or "-").capitalize(),
+        }
+        for rs in c["round_scores"]:
+            row[round_names.get(rs["round_key"], rs["round_key"])] = rs["score"] if rs["score"] is not None else ""
+        row["Overall"] = c["overall"] if c["overall"] is not None else ""
+        rows.append(row)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        pd.DataFrame(rows).to_excel(writer, index=False, sheet_name="Candidates")
+    buf.seek(0)
+
+    safe_title = "".join(c if c.isalnum() else "_" for c in job["title"]).strip("_")[:40] or "job"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}_candidates.xlsx"'},
+    )
 
 
 def _get_candidate_or_404(job_id: int, candidate_id: int) -> dict:
@@ -872,6 +963,8 @@ async def get_candidate_detail(job_id: int, candidate_id: int):
     candidate["is_overqualified"] = bool(candidate["is_overqualified"])
     candidate["rounds"] = rounds
     candidate["screening_sessions"] = sessions
+    completed_count = sum(1 for r in rounds if r["result"] is not None and r["result"]["score"] is not None)
+    candidate["pipeline_status"] = pipeline_status_label(completed_count, len(rounds))
     return candidate
 
 
@@ -879,6 +972,7 @@ async def get_candidate_detail(job_id: int, candidate_id: int):
 async def reject_candidate(job_id: int, candidate_id: int):
     """Mark a candidate rejected. Reversible (see /unreject) — the candidate stays in the
     pool and in candidate listings, just flagged, rather than being deleted or hidden."""
+    _require_active_job(_get_job_or_404(job_id))
     _get_candidate_or_404(job_id, candidate_id)
     with get_db() as conn:
         conn.execute(
@@ -892,6 +986,37 @@ async def reject_candidate(job_id: int, candidate_id: int):
 @router.post("/{job_id}/candidates/{candidate_id}/unreject")
 async def unreject_candidate(job_id: int, candidate_id: int):
     """Undo a rejection."""
+    _require_active_job(_get_job_or_404(job_id))
+    _get_candidate_or_404(job_id, candidate_id)
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE candidates SET screening_decision = NULL WHERE id = ? AND job_id = ?",
+            (candidate_id, job_id),
+        )
+        conn.commit()
+    return {"candidate_id": candidate_id, "screening_decision": None}
+
+
+@router.post("/{job_id}/candidates/{candidate_id}/shortlist")
+async def shortlist_candidate(job_id: int, candidate_id: int):
+    """Mark a candidate shortlisted. Reversible (see /unshortlist) and mutually exclusive
+    with a rejection -- setting one clears the other, since both live in the same
+    screening_decision column."""
+    _require_active_job(_get_job_or_404(job_id))
+    _get_candidate_or_404(job_id, candidate_id)
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE candidates SET screening_decision = 'shortlisted' WHERE id = ? AND job_id = ?",
+            (candidate_id, job_id),
+        )
+        conn.commit()
+    return {"candidate_id": candidate_id, "screening_decision": "shortlisted"}
+
+
+@router.post("/{job_id}/candidates/{candidate_id}/unshortlist")
+async def unshortlist_candidate(job_id: int, candidate_id: int):
+    """Undo a shortlist decision."""
+    _require_active_job(_get_job_or_404(job_id))
     _get_candidate_or_404(job_id, candidate_id)
     with get_db() as conn:
         conn.execute(
@@ -914,6 +1039,7 @@ async def trigger_screening(job_id: int, candidate_id: int, body: TriggerScreeni
     Blocked for candidates the resume-screening pipeline rejected at the
     mandatory gate — see `engine.ScreeningGateError`.
     """
+    _require_active_job(_get_job_or_404(job_id))
     question_ids = body.question_ids if body else []
     try:
         session = engine.create_session(job_id, candidate_id, selected_question_ids=question_ids)
@@ -979,6 +1105,7 @@ async def trigger_interview(job_id: int, candidate_id: int, body: TriggerIntervi
 
     Blocked for candidates the resume-screening pipeline rejected at the mandatory gate.
     """
+    _require_active_job(_get_job_or_404(job_id))
     try:
         session = interview_engine.create_session(job_id, candidate_id, body.round_key)
     except interview_engine.SessionNotFoundError as exc:
@@ -1066,3 +1193,26 @@ async def get_interview_recording(job_id: int, candidate_id: int, session_id: in
     if not path.exists():
         raise HTTPException(status_code=404, detail="Recording file is missing")
     return FileResponse(path, media_type="video/webm", filename=row["recording_path"])
+
+
+_RESUME_MEDIA_TYPES = {".pdf": "application/pdf", ".doc": "application/msword",
+                       ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
+@router.get("/{job_id}/candidates/{candidate_id}/resume")
+async def get_candidate_resume(job_id: int, candidate_id: int):
+    """Serve the candidate's matched CV file (see POST /{job_id}/cvs), for the "view resume"
+    link on the candidate profile page. Same pattern as the interview recording endpoint."""
+    from fastapi.responses import FileResponse
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT resume_path FROM candidates WHERE id = ? AND job_id = ?", (candidate_id, job_id)
+        ).fetchone()
+    if not row or not row["resume_path"]:
+        raise HTTPException(status_code=404, detail="No resume on file for this candidate")
+    path = storage.candidates_dir(job_id) / row["resume_path"]
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Resume file is missing")
+    media_type = _RESUME_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, media_type=media_type, filename=row["resume_path"])
