@@ -1856,7 +1856,22 @@ a {
 /* ---------- round management extras ---------- */
 
 .round-card-optional {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   cursor: default;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.round-card-optional:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.round-card-optional-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .round-edit-icon {
