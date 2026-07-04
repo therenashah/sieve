@@ -41,8 +41,18 @@ async def summarize_session(session_id: int, candidate_profile: dict) -> dict:
 
     key_highlights = result.get("key_highlights", [])
     flags = result.get("flags", [])
-    updated_score = result.get("updated_fitment_score")
     summary = result.get("summary", "")
+
+    # Every round writes round_results.score on the same 0-100 scale (resume_screening's
+    # weighted rubric average, this fitment score, and interview scorecards -- see
+    # interview.py's identical clamp) so the leaderboard's cross-round "overall" average
+    # is always comparing like-for-like. Clamp defensively rather than trusting the LLM
+    # to stay in range even though the prompt already asks for 0-100.
+    updated_score = result.get("updated_fitment_score")
+    if isinstance(updated_score, (int, float)):
+        updated_score = max(0, min(100, int(updated_score)))
+    else:
+        updated_score = None
 
     with get_db() as conn:
         conn.execute(

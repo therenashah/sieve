@@ -311,7 +311,7 @@ function RoundCard({
           </div>
           <div className="round-detail-title">{subtitle}</div>
         </div>
-        {result?.score != null && <div className="round-score">{result.score}</div>}
+        {result?.score != null && <div className="round-score">{result.score}%</div>}
       </div>
 
       {!result && <p className="round-empty">{emptyHint}</p>}

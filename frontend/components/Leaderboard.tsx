@@ -327,7 +327,7 @@ export default function Leaderboard({
                 {c.round_scores.map((rs) => (
                   <td key={rs.round_key}>
                     {rs.score != null ? (
-                      <span className={`score-pill ${scoreClass(rs.score)}`}>{rs.score}</span>
+                      <span className={`score-pill ${scoreClass(rs.score)}`}>{rs.score}%</span>
                     ) : (
                       "—"
                     )}
@@ -335,7 +335,7 @@ export default function Leaderboard({
                 ))}
                 <td>
                   {c.overall != null ? (
-                    <span className={`score-pill ${scoreClass(c.overall)}`}>{c.overall}</span>
+                    <span className={`score-pill ${scoreClass(c.overall)}`}>{c.overall}%</span>
                   ) : (
                     "—"
                   )}

@@ -22,7 +22,7 @@ def _build_resume_screening_result(rubric: Rubric, score_rows: list) -> dict:
     name_by_id = {c.id: c.name for c in rubric.criteria}
     weights = {c.id: c.weight for c in rubric.criteria}
     weighted_avg = sum(row["score"] * weights.get(row["criterion_id"], 0.0) for row in score_rows)
-    score_pct = round(weighted_avg * 10)
+    score_pct = max(0, min(100, round(weighted_avg * 10)))
 
     ordered = sorted(score_rows, key=lambda r: r["score"], reverse=True)
     key_highlights = [
