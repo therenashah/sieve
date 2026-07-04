@@ -495,7 +495,7 @@ function ScreeningPageInner() {
               <p className="section-label">{candidates.length} candidates</p>
               <div style={{ display: "flex", gap: "0.5rem" }}>
                 <button className="btn btn-secondary" onClick={() => setFilterModalOpen(true)}>
-                  Filter
+                  AI-enhanced filter
                 </button>
                 {activeFilterSet && (
                   <button className="btn btn-secondary" onClick={clearFilters}>
@@ -546,7 +546,7 @@ function ScreeningPageInner() {
                       Candidate{sortIndicator("name")}
                     </th>
                     <th className="sortable" onClick={() => toggleSort("overall")}>
-                      Overall{sortIndicator("overall")}
+                      Resume Screening{sortIndicator("overall")}
                     </th>
                     <th className="sortable" onClick={() => toggleSort("status")}>
                       Status{sortIndicator("status")}

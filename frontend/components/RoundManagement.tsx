@@ -85,22 +85,22 @@ export default function RoundManagement({
             className="card round-card"
             onClick={() => router.push(`/jobs/${jobId}/${BUILTIN_LINKS[r.round_key] ?? ""}`)}
           >
-            <span className="round-card-number">{i + 1}</span>
-            <div>
-              <div className="round-card-title">{r.name}</div>
-              <div className="round-card-subtitle">{BUILTIN_SUBTITLES[r.round_key] ?? r.description}</div>
+            <div className="round-card-top">
+              <span className="round-card-number">{i + 1}</span>
             </div>
+            <div className="round-card-title">{r.name}</div>
+            <div className="round-card-subtitle">{BUILTIN_SUBTITLES[r.round_key] ?? r.description}</div>
           </div>
         ))}
 
         {optionalRounds.map((r, i) => (
           <div
             key={r.round_key}
-            className={`card round-card-optional${r.is_ai_based ? "" : " round-card-static"}`}
+            className={`card round-card${r.is_ai_based ? "" : " round-card-static"}`}
             onClick={r.is_ai_based ? () => router.push(`/jobs/${jobId}/rounds/${r.round_key}`) : undefined}
             style={r.is_ai_based ? { cursor: "pointer" } : undefined}
           >
-            <div className="round-card-optional-top">
+            <div className="round-card-top">
               <span className="round-card-number">{builtinRounds.length + i + 1}</span>
               {!readOnly && (
                 <div className="round-card-icons">

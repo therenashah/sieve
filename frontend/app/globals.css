@@ -1340,8 +1340,8 @@ a {
 
 .round-card {
   display: flex;
-  align-items: center;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.5rem;
   cursor: pointer;
   transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
@@ -1349,6 +1349,12 @@ a {
 .round-card:hover {
   box-shadow: var(--shadow-md);
   transform: translateY(-2px);
+}
+
+.round-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .round-card-number {
@@ -1855,23 +1861,13 @@ a {
 
 /* ---------- round management extras ---------- */
 
-.round-card-optional {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+.round-card-static {
   cursor: default;
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
 }
 
-.round-card-optional:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
-}
-
-.round-card-optional-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.round-card-static:hover {
+  box-shadow: none;
+  transform: none;
 }
 
 .round-edit-icon {
