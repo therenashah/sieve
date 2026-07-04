@@ -3,13 +3,14 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import AnalyticsSummary from "@/components/AnalyticsSummary";
 import FileUpload from "@/components/FileUpload";
 import FunnelChart from "@/components/FunnelChart";
 import Leaderboard from "@/components/Leaderboard";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
 import RoundManagement from "@/components/RoundManagement";
-import { ApiError, getJob, getLeaderboard, uploadCvs, uploadTracker } from "@/lib/api";
+import { ApiError, getJob, getLeaderboard, unarchiveJob, uploadCvs, uploadTracker } from "@/lib/api";
 import type { CvUploadResult, Job, LeaderboardResponse, RowError } from "@/lib/types";
 
 function JobDetailInner() {
@@ -54,6 +55,17 @@ function JobDetailInner() {
     refresh();
   }
 
+  async function handleUnarchive() {
+    try {
+      await unarchiveJob(jobId);
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't unarchive this posting.");
+    }
+  }
+
+  const isArchived = job?.status === "archived";
+
   return (
     <>
       <Navbar />
@@ -74,24 +86,35 @@ function JobDetailInner() {
           </div>
         )}
 
-        <div className="card" style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 260px" }}>
-            <FileUpload
-              accept=".csv,.xlsx,.xls"
-              label="Upload / update candidate tracker"
-              hint="Adds new candidates or refreshes existing ones by Candidate ID."
-              onUpload={handleTrackerUpload}
-            />
+        {isArchived && (
+          <div className="alert alert-warning" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
+            <span>This posting is archived and read-only — uploads, rounds, and candidate actions are disabled.</span>
+            <button className="btn btn-small btn-secondary" onClick={handleUnarchive}>
+              Unarchive
+            </button>
           </div>
-          <div style={{ flex: "1 1 260px" }}>
-            <FileUpload
-              accept=".zip"
-              label="Upload / update candidate CVs (.zip)"
-              hint="Matches filenames to candidate names automatically."
-              onUpload={handleCvUpload}
-            />
+        )}
+
+        {!isArchived && (
+          <div className="card" style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 260px" }}>
+              <FileUpload
+                accept=".csv,.xlsx,.xls"
+                label="Upload / update candidate tracker"
+                hint="Adds new candidates or refreshes existing ones by Candidate ID."
+                onUpload={handleTrackerUpload}
+              />
+            </div>
+            <div style={{ flex: "1 1 260px" }}>
+              <FileUpload
+                accept=".zip"
+                label="Upload / update candidate CVs (.zip)"
+                hint="Matches filenames to candidate names automatically."
+                onUpload={handleCvUpload}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         {rowErrors.length > 0 && (
           <div className="alert alert-warning">
@@ -130,14 +153,25 @@ function JobDetailInner() {
           <>
             <div className="card" style={{ marginTop: "1.5rem" }}>
               <p className="section-label" style={{ margin: "0 0 0.75rem" }}>
-                Pipeline progress
+                Analytics
               </p>
-              <FunnelChart stages={leaderboard.funnel} total={leaderboard.total_candidates} />
+              <AnalyticsSummary data={leaderboard} />
+              {leaderboard.funnel.length > 0 && (
+                <div style={{ marginTop: "1.25rem" }}>
+                  <FunnelChart stages={leaderboard.funnel} total={leaderboard.total_candidates} />
+                </div>
+              )}
             </div>
 
             <p className="section-label">Candidates — click a row to open their profile</p>
             {leaderboard.candidates.length > 0 ? (
-              <Leaderboard data={leaderboard} onRowClick={(c) => router.push(`/jobs/${jobId}/candidates/${c.id}`)} />
+              <Leaderboard
+                data={leaderboard}
+                jobId={jobId}
+                onRowClick={(c) => router.push(`/jobs/${jobId}/candidates/${c.id}`)}
+                onRefresh={refresh}
+                readOnly={isArchived}
+              />
             ) : (
               <div className="empty-state">
                 <p>No candidates yet — upload a tracker above to get started.</p>
@@ -147,7 +181,9 @@ function JobDetailInner() {
         )}
 
         <p className="section-label">Round management</p>
-        {job && <RoundManagement jobId={jobId} jobTitle={job.title} onRoundsChanged={refresh} />}
+        {job && (
+          <RoundManagement jobId={jobId} jobTitle={job.title} onRoundsChanged={refresh} readOnly={isArchived} />
+        )}
       </main>
     </>
   );

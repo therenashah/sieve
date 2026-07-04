@@ -123,7 +123,7 @@ export interface Candidate {
   l3_status: string | null;
   pre_offer_status: string | null;
   resume_path: string | null;
-  screening_decision: string | null; // null | "rejected" -- HR's resume-screening decision, reversible
+  screening_decision: string | null; // null | "rejected" | "shortlisted" -- HR's resume-screening decision, reversible
   created_at: string;
   profile?: Record<string, unknown>;
   screening_result?: Record<string, unknown> | null;
@@ -251,6 +251,11 @@ export interface CandidateRound {
 export interface CandidateDetail extends Candidate {
   rounds: CandidateRound[];
   screening_sessions: ScreeningSessionSummary[];
+  // Computed the same way as LeaderboardCandidate.status (see pipeline_status_label in
+  // routes_jobs.py) -- single source of truth so this page and the leaderboard never
+  // disagree about the same candidate. Distinct from `status` (the base Candidate
+  // field), which is the resume-parsing pipeline's internal PARSING/SCORING/etc state.
+  pipeline_status: string;
 }
 
 // ---------- round management ----------
@@ -427,6 +432,7 @@ export interface LeaderboardCandidate {
   round_scores: LeaderboardRoundScore[];
   overall: number | null;
   status: string;
+  screening_decision: string | null; // null | "rejected" | "shortlisted"
 }
 
 export interface FunnelStage {

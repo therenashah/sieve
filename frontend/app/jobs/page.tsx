@@ -3,15 +3,21 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
+import { TrashIcon } from "@/components/icons";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
-import { ApiError, listJobs } from "@/lib/api";
+import { ApiError, archiveJob, deleteJob, listJobs, unarchiveJob } from "@/lib/api";
 import type { Job } from "@/lib/types";
 
 function JobsPageInner() {
   const router = useRouter();
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [error, setError] = useState("");
+  const [tab, setTab] = useState<"active" | "archived">("active");
+  const [confirmTarget, setConfirmTarget] = useState<Job | null>(null);
+  const [modalBusy, setModalBusy] = useState(false);
+  const [modalError, setModalError] = useState("");
 
   useEffect(() => {
     listJobs()
@@ -24,6 +30,47 @@ function JobsPageInner() {
         setError("Couldn't load job postings. Is the API running?");
       });
   }, [router]);
+
+  const activeJobs = jobs?.filter((j) => j.status !== "archived") ?? [];
+  const archivedJobs = jobs?.filter((j) => j.status === "archived") ?? [];
+  const visibleJobs = tab === "active" ? activeJobs : archivedJobs;
+
+  async function handleArchive(job: Job) {
+    setModalBusy(true);
+    setModalError("");
+    try {
+      const updated = await archiveJob(job.id);
+      setJobs((prev) => prev?.map((j) => (j.id === job.id ? updated : j)) ?? null);
+      setConfirmTarget(null);
+    } catch (err) {
+      setModalError(err instanceof Error ? err.message : "Couldn't archive this posting.");
+    } finally {
+      setModalBusy(false);
+    }
+  }
+
+  async function handleDelete(job: Job) {
+    setModalBusy(true);
+    setModalError("");
+    try {
+      await deleteJob(job.id);
+      setJobs((prev) => prev?.filter((j) => j.id !== job.id) ?? null);
+      setConfirmTarget(null);
+    } catch (err) {
+      setModalError(err instanceof Error ? err.message : "Couldn't delete this posting.");
+    } finally {
+      setModalBusy(false);
+    }
+  }
+
+  async function handleUnarchive(job: Job) {
+    try {
+      const updated = await unarchiveJob(job.id);
+      setJobs((prev) => prev?.map((j) => (j.id === job.id ? updated : j)) ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't unarchive this posting.");
+    }
+  }
 
   return (
     <>
@@ -43,6 +90,25 @@ function JobsPageInner() {
 
         {jobs === null && !error && <div className="empty-state">Loading postings…</div>}
 
+        {jobs && jobs.length > 0 && (
+          <div className="jobs-tabs">
+            <button
+              type="button"
+              className={`jobs-tab${tab === "active" ? " jobs-tab-active" : ""}`}
+              onClick={() => setTab("active")}
+            >
+              Active ({activeJobs.length})
+            </button>
+            <button
+              type="button"
+              className={`jobs-tab${tab === "archived" ? " jobs-tab-active" : ""}`}
+              onClick={() => setTab("archived")}
+            >
+              Archived ({archivedJobs.length})
+            </button>
+          </div>
+        )}
+
         {jobs && jobs.length === 0 && (
           <div className="empty-state">
             <p>No job postings yet.</p>
@@ -52,13 +118,52 @@ function JobsPageInner() {
           </div>
         )}
 
-        {jobs && jobs.length > 0 && (
+        {jobs && jobs.length > 0 && visibleJobs.length === 0 && (
+          <div className="empty-state">
+            <p>{tab === "active" ? "No active postings." : "No archived postings."}</p>
+          </div>
+        )}
+
+        {visibleJobs.length > 0 && (
           <div className="job-grid">
-            {jobs.map((job) => (
-              <div key={job.id} className="card job-card" onClick={() => router.push(`/jobs/${job.id}`)}>
+            {visibleJobs.map((job) => (
+              <div
+                key={job.id}
+                className={`card job-card${job.status === "archived" ? " job-card-archived" : ""}`}
+                onClick={() => router.push(`/jobs/${job.id}`)}
+              >
                 <div className="job-card-top">
                   <span className={`badge badge-${job.status}`}>{job.status}</span>
-                  <span className="job-card-date">{new Date(job.created_at).toLocaleDateString()}</span>
+                  <div className="job-card-top-actions">
+                    <span className="job-card-date">{new Date(job.created_at).toLocaleDateString()}</span>
+                    {job.status === "archived" && (
+                      <button
+                        type="button"
+                        className="icon-delete-btn"
+                        title="Unarchive"
+                        aria-label={`Unarchive ${job.title}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleUnarchive(job);
+                        }}
+                      >
+                        ↺
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="icon-delete-btn"
+                      title="Delete posting"
+                      aria-label={`Delete ${job.title}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setModalError("");
+                        setConfirmTarget(job);
+                      }}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
                 </div>
                 <h3 className="job-card-title">{job.title}</h3>
                 <p className="job-card-desc">{job.description || "No description provided."}</p>
@@ -74,6 +179,18 @@ function JobsPageInner() {
           </div>
         )}
       </main>
+
+      {confirmTarget && (
+        <ConfirmDeleteModal
+          title={`Delete "${confirmTarget.title}"?`}
+          message="This will permanently delete all candidates, scores, rubrics, and screening/interview data for this posting. Please export any data you need before deleting — or archive this posting instead to keep it (read-only) without losing anything."
+          onCancel={() => setConfirmTarget(null)}
+          onArchive={confirmTarget.status === "archived" ? undefined : () => handleArchive(confirmTarget)}
+          onDelete={() => handleDelete(confirmTarget)}
+          busy={modalBusy}
+          error={modalError}
+        />
+      )}
     </>
   );
 }
