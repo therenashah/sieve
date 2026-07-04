@@ -69,7 +69,7 @@ Respond with exactly this JSON shape:
 """
 
 SCORING_PROMPT = """\
-Score this candidate's resume against the following rubric criteria.
+Score this candidate's resume against the following rubric criteria for this role: "{job_title}".
 
 Score demonstrated experience (roles, projects, outcomes) — not keyword presence. A skill that
 appears only in a skills list without supporting experience scores at most 3. Evidence must be a
@@ -78,12 +78,28 @@ verbatim quote from the resume, or the exact string "not found" if there's no ev
 Criteria:
 {criteria_block}
 
+Job description (for seniority context):
+{jd_text}
+
 Resume:
 {resume_text}
 
 For EVERY criterion listed above, output exactly one score (0-10 integer), a verbatim evidence
-quote (or "not found"), and an optional short note. Respond with exactly this JSON shape:
-{{"scores": [{{"criterion_id": "c1", "score": 0, "evidence": "...", "note": "..."}}, ...]}}
+quote (or "not found"), and an optional short note.
+
+Also assess seniority mismatch: does the candidate's most recent role(s) read as MORE senior than
+what this job is hiring for — e.g. their last title was "Engineering Manager" / "Staff Engineer" /
+"Director" / "Head of X" while this role is an individual-contributor or less senior position, or
+their scope of ownership (team size, org level) clearly exceeds what's being asked? Set
+is_overqualified=true ONLY for a genuine seniority/scope mismatch — being very strong at the right
+level is NOT overqualified, and don't flag it just because total years of experience is high. If
+true, overqualification_reason must name the specific mismatch (e.g. "Most recent role was
+Engineering Manager leading a team of 12; this role is an individual-contributor SRE position").
+If false, leave overqualification_reason as an empty string.
+
+Respond with exactly this JSON shape:
+{{"scores": [{{"criterion_id": "c1", "score": 0, "evidence": "...", "note": "..."}}, ...],
+"is_overqualified": false, "overqualification_reason": ""}}
 """
 
 COPILOT_PROMPT = """\

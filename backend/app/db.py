@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS candidates (
     -- HR's resume-screening decision (distinct from the tracker-imported *_status columns
     -- below, which get overwritten on every tracker re-sync). NULL | 'rejected'. Reversible.
     screening_decision TEXT,
+    -- Seniority-mismatch flag from scoring: candidate's recent experience reads as more
+    -- senior than this role. Does not affect rank/overall score, just an extra signal.
+    is_overqualified INTEGER NOT NULL DEFAULT 0,
+    overqualification_reason TEXT,
     -- Output of the resume-screening pipeline: mandatory gate result, fitment
     -- score, recommendation, strengths/gaps. NULL means not yet screened.
     screening_result_json TEXT,
@@ -285,6 +289,8 @@ _CANDIDATE_COLUMNS = {
     "pre_offer_status": "TEXT",
     "resume_path": "TEXT",
     "screening_decision": "TEXT",
+    "is_overqualified": "INTEGER NOT NULL DEFAULT 0",
+    "overqualification_reason": "TEXT",
 }
 _JOB_QUESTION_COLUMNS = {"source": "TEXT NOT NULL DEFAULT 'default'"}
 _SCREENING_SESSION_COLUMNS = {"selected_question_ids": "TEXT"}

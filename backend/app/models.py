@@ -69,6 +69,11 @@ class CriterionScore(BaseModel):
 
 class ScoreSheet(BaseModel):
     scores: list[CriterionScore]
+    # Seniority-mismatch flag: candidate's recent experience reads as MORE senior than
+    # this role, not just "very qualified". Recomputed on every scoring call (including
+    # selective re-scores) since it's part of the same LLM response, not a separate call.
+    is_overqualified: bool = False
+    overqualification_reason: str = ""
 
     def validate_criteria(self, expected_ids: list[str]) -> "ScoreSheet":
         actual_ids = [s.criterion_id for s in self.scores]

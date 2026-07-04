@@ -1,10 +1,11 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
+import TriggerScreeningModal from "@/components/TriggerScreeningModal";
 import {
   ApiError,
   applyRubric,
@@ -15,7 +16,6 @@ import {
   rejectCandidate,
   rubricChat,
   scanCandidates,
-  triggerScreening,
   unrejectCandidate,
 } from "@/lib/api";
 import type { Candidate, Criterion, FilterSet, Job, Rubric, RubricDiff } from "@/lib/types";
@@ -34,6 +34,33 @@ function scoreClassForRank(index: number, total: number): string {
   return "score-mid";
 }
 
+// Same status vocabulary/coloring as the job page's Leaderboard (components/Leaderboard.tsx)
+// -- duplicated locally rather than imported since it's a tiny pure function and this
+// avoids coupling two independent pages' bundles to one shared module for 5 lines.
+function statusBadgeClass(status: string): string {
+  if (status.includes("pending")) return "badge-warning";
+  if (status === "All rounds completed") return "badge-success";
+  return "badge-neutral";
+}
+
+// Rubric descriptions follow the "3: ... 6: ... 9: ..." anchor convention from the
+// rubric-generation prompt. Parse it into labeled tiers HR can skim, falling back to the
+// raw text for anything written differently (e.g. manually edited off-format).
+const ANCHOR_LABELS: Record<string, string> = { "3": "Basic", "6": "Proficient", "9": "Expert" };
+
+function parseAnchors(description: string): { level: string; label: string; text: string }[] | null {
+  const matches = [...description.matchAll(/(\d+)\s*:\s*([^]*?)(?=(?:\d+\s*:)|$)/g)];
+  if (matches.length < 2) return null;
+  return matches.map(([, level, text]) => ({
+    level,
+    label: ANCHOR_LABELS[level] ?? `Level ${level}`,
+    text: text.trim().replace(/\.$/, ""),
+  }));
+}
+
+type SortKey = "name" | "overall" | "status" | "flags" | "decision" | null;
+type SortDir = "asc" | "desc";
+
 function ScreeningPageInner() {
   const params = useParams<{ id: string }>();
   const jobId = params.id;
@@ -47,6 +74,9 @@ function ScreeningPageInner() {
   const [savingRubric, setSavingRubric] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [screeningCandidate, setScreeningCandidate] = useState<Candidate | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>(null);
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
@@ -193,6 +223,58 @@ function ScreeningPageInner() {
     });
   }
 
+  function toggleSort(key: Exclude<SortKey, null>) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  }
+
+  function sortIndicator(key: SortKey) {
+    if (sortKey !== key) return "";
+    return sortDir === "asc" ? " ▲" : " ▼";
+  }
+
+  // The API already returns candidates ranked desc by overall score -- capture that as a
+  // stable per-candidate rank BEFORE any column sort, so the percentile-based green/red
+  // coloring always reflects true rank position, never the currently displayed sort order.
+  const rankedCandidates = useMemo(() => candidates.map((c, i) => ({ ...c, _rankIndex: i })), [candidates]);
+
+  const displayedCandidates = useMemo(() => {
+    if (!sortKey) return rankedCandidates;
+    const list = [...rankedCandidates];
+    list.sort((a, b) => {
+      let av: string | number;
+      let bv: string | number;
+      if (sortKey === "name") {
+        av = a.name.toLowerCase();
+        bv = b.name.toLowerCase();
+      } else if (sortKey === "overall") {
+        av = a.overall ?? -1;
+        bv = b.overall ?? -1;
+      } else if (sortKey === "status") {
+        av = a.pipeline_status ?? "";
+        bv = b.pipeline_status ?? "";
+      } else if (sortKey === "flags") {
+        av = a.is_overqualified ? 1 : 0;
+        bv = b.is_overqualified ? 1 : 0;
+      } else {
+        av = a.screening_decision === "rejected" ? 1 : 0;
+        bv = b.screening_decision === "rejected" ? 1 : 0;
+      }
+      if (av === bv) return 0;
+      const cmp = av < bv ? -1 : 1;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [rankedCandidates, sortKey, sortDir]);
+
+  const selectedCandidates = candidates.filter((c) => selectedIds.has(c.id));
+  const canReject = selectedCandidates.some((c) => c.screening_decision !== "rejected");
+  const canUnreject = selectedCandidates.some((c) => c.screening_decision === "rejected");
+
   async function bulkReject() {
     setError("");
     try {
@@ -212,19 +294,6 @@ function ScreeningPageInner() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't undo rejection for the selected candidates.");
-    }
-  }
-
-  async function bulkTriggerScreening() {
-    setError("");
-    try {
-      await Promise.all(Array.from(selectedIds).map((id) => triggerScreening(jobId, id)));
-      setSelectedIds(new Set());
-      alert("Screening links created for the selected candidates.");
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Couldn't trigger HR screening for the selected candidates.",
-      );
     }
   }
 
@@ -300,7 +369,22 @@ function ScreeningPageInner() {
                 <li key={c.id} className="rubric-row">
                   <div className="rubric-row-main">
                     <div className="rubric-row-name">{c.name}</div>
-                    <p className="rubric-row-desc">{c.description}</p>
+                    {(() => {
+                      const anchors = parseAnchors(c.description);
+                      if (!anchors) return <p className="rubric-row-desc">{c.description}</p>;
+                      return (
+                        <div className="rubric-anchor-list">
+                          {anchors.map((a) => (
+                            <div
+                              key={a.level}
+                              className={`rubric-anchor rubric-anchor-${a.label.toLowerCase().replace(/\s+/g, "-")}`}
+                            >
+                              <span className="rubric-anchor-label">{a.label}:</span> {a.text}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="rubric-row-controls">
                     <label className="weight-input">
@@ -456,14 +540,11 @@ function ScreeningPageInner() {
             )}
 
             <div className="wizard-actions">
-              <button className="btn btn-danger" onClick={bulkReject} disabled={selectedIds.size === 0}>
+              <button className="btn btn-danger" onClick={bulkReject} disabled={!canReject}>
                 Reject selected ({selectedIds.size})
               </button>
-              <button className="btn btn-secondary" onClick={bulkUnreject} disabled={selectedIds.size === 0}>
+              <button className="btn btn-secondary" onClick={bulkUnreject} disabled={!canUnreject}>
                 Unreject selected
-              </button>
-              <button className="btn btn-primary" onClick={bulkTriggerScreening} disabled={selectedIds.size === 0}>
-                Trigger HR screening for selected
               </button>
             </div>
 
@@ -474,21 +555,45 @@ function ScreeningPageInner() {
                     <th>
                       <input
                         type="checkbox"
+                        className="grid-checkbox"
                         checked={selectedIds.size > 0 && selectedIds.size === candidates.length}
                         onChange={toggleSelectAll}
+                        title="Select all"
                       />
                     </th>
-                    <th>Candidate</th>
-                    <th>Overall</th>
-                    <th>Status</th>
-                    <th>Decision</th>
+                    <th className="sortable" onClick={() => toggleSort("name")}>
+                      Candidate{sortIndicator("name")}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort("overall")}>
+                      Overall{sortIndicator("overall")}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort("status")}>
+                      Status{sortIndicator("status")}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort("flags")}>
+                      Flags{sortIndicator("flags")}
+                    </th>
+                    <th className="sortable" onClick={() => toggleSort("decision")}>
+                      Decision{sortIndicator("decision")}
+                    </th>
+                    <th>HR Screening</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {candidates.map((c, index) => (
-                    <tr key={c.id}>
-                      <td>
-                        <input type="checkbox" checked={selectedIds.has(c.id)} onChange={() => toggleSelect(c.id)} />
+                  {displayedCandidates.map((c) => (
+                    <tr
+                      key={c.id}
+                      onClick={() => router.push(`/jobs/${jobId}/candidates/${c.id}`)}
+                      className={c.is_overqualified ? "row-overqualified" : undefined}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          className="grid-checkbox"
+                          checked={selectedIds.has(c.id)}
+                          onChange={() => toggleSelect(c.id)}
+                        />
                       </td>
                       <td>
                         <div className="cand-name">{c.name}</div>
@@ -496,22 +601,49 @@ function ScreeningPageInner() {
                       </td>
                       <td>
                         {c.overall != null ? (
-                          <span className={`score-pill ${scoreClassForRank(index, candidates.length)}`}>
-                            {Math.round(c.overall * 100)}%
+                          <span className={`score-pill ${scoreClassForRank(c._rankIndex, candidates.length)}`}>
+                            {Math.round(c.overall * 100)}
                           </span>
                         ) : (
                           "—"
                         )}
                       </td>
                       <td>
-                        <span className="badge badge-neutral">{c.status}</span>
+                        {c.pipeline_status ? (
+                          <span className={`badge ${statusBadgeClass(c.pipeline_status)}`}>{c.pipeline_status}</span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td>
+                        {c.is_overqualified ? (
+                          <span
+                            className="badge badge-flag"
+                            title={c.overqualification_reason || "Recent experience reads more senior than this role."}
+                          >
+                            ⚠ Overqualified
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                       <td>
                         {c.screening_decision === "rejected" ? (
                           <span className="badge badge-warning">Rejected</span>
+                        ) : c.screening_session_status ? (
+                          <span className="badge badge-active">HR screening sent</span>
                         ) : (
                           "—"
                         )}
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          onClick={() => setScreeningCandidate(c)}
+                          disabled={c.screening_decision === "rejected"}
+                        >
+                          {c.screening_session_status ? "Re-trigger" : "Trigger"}
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -521,6 +653,19 @@ function ScreeningPageInner() {
           </div>
         )}
       </main>
+
+      {screeningCandidate && (
+        <TriggerScreeningModal
+          jobId={jobId}
+          candidateId={screeningCandidate.id}
+          candidateName={screeningCandidate.name}
+          onClose={() => {
+            setScreeningCandidate(null);
+            // Refresh so the Decision column reflects a newly-triggered screening.
+            refresh();
+          }}
+        />
+      )}
     </>
   );
 }

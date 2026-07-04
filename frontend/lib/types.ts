@@ -131,6 +131,17 @@ export interface Candidate {
   // tracker/CV upload responses, which return raw candidate rows.
   overall?: number | null;
   scores?: CandidateCriterionScore[];
+  // Seniority-mismatch flag from scoring -- doesn't affect rank, just a separate signal.
+  // Set from GET /candidates and GET /candidates/{id}; other endpoints may omit it.
+  is_overqualified?: boolean;
+  overqualification_reason?: string | null;
+  // Latest HR-screening session status (active | completed | expired), or null if none
+  // triggered yet. Present on GET /candidates.
+  screening_session_status?: string | null;
+  // Plain-English pipeline status ("Not started" | "R1 completed" | "R2 pending" |
+  // "All rounds completed") -- the exact same value the job page's Leaderboard shows,
+  // computed the same way server-side. Present on GET /candidates.
+  pipeline_status?: string | null;
 }
 
 export interface RankedCandidatesResponse {
@@ -189,12 +200,24 @@ export interface RoundFlag {
   detail: string;
 }
 
+export interface ResumeScreeningCriterionScore {
+  criterion_id: string;
+  name: string;
+  weight: number | null;
+  score: number;
+  evidence: string;
+  note: string;
+}
+
 export interface RoundResult {
   score: number | null;
   summary: string | null;
   key_highlights: string[];
   flags: RoundFlag[];
   updated_at: string;
+  // Only present for the resume_screening round -- full per-criterion breakdown,
+  // not just the extremes captured in `flags`. See GET /candidates/{id}.
+  criteria?: ResumeScreeningCriterionScore[];
 }
 
 export interface ScreeningSessionSummary {

@@ -21,6 +21,8 @@
   --danger-fg: #c23636;
   --neutral-bg: #eef1f7;
   --neutral-fg: #4a5578;
+  --flag-bg: #f1e9fc;
+  --flag-fg: #6b3fa0;
 
   --radius-sm: 8px;
   --radius: 14px;
@@ -334,6 +336,34 @@ a {
   margin: 0.3rem 0 0;
 }
 
+.rubric-anchor-list {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.4rem 0 0;
+}
+
+.rubric-anchor {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.rubric-anchor-label {
+  font-weight: 600;
+}
+
+.rubric-anchor-basic .rubric-anchor-label {
+  color: var(--danger-fg, #b91c1c);
+}
+
+.rubric-anchor-proficient .rubric-anchor-label {
+  color: var(--warning-fg, #b45309);
+}
+
+.rubric-anchor-expert .rubric-anchor-label {
+  color: var(--success-fg, #15803d);
+}
+
 .rubric-row-controls {
   display: flex;
   align-items: center;
@@ -525,6 +555,49 @@ a {
   color: var(--neutral-fg);
 }
 
+/* ---------- grid checkbox ---------- */
+
+.grid-checkbox {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--blue-600);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+/* ---------- overqualification flag ---------- */
+/* Deliberately its own color (violet), distinct from the green/amber/red rank
+   coloring and from the amber "Rejected" badge -- this is a separate signal, not
+   a score judgment, and candidates keep their normal rank position regardless.
+   Defined after the base .badge/.badge-* rules above so it isn't overridden by
+   them (equal specificity -- source order decides the winner). */
+
+.badge-flag {
+  background: var(--flag-bg);
+  color: var(--flag-fg);
+}
+
+.row-overqualified {
+  box-shadow: inset 3px 0 0 var(--flag-fg);
+}
+
+.overqualified-callout {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  background: var(--flag-bg);
+  color: var(--flag-fg);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  font-size: 0.88rem;
+  margin: 0 0 0.9rem;
+}
+
+.overqualified-callout strong {
+  display: block;
+  margin-bottom: 0.15rem;
+}
+
 /* ---------- alerts ---------- */
 
 .alert {
@@ -648,6 +721,8 @@ a {
   margin-top: 1.25rem;
   display: flex;
   justify-content: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 /* ---------- file upload ---------- */
@@ -1259,6 +1334,92 @@ a {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+}
+
+/* ---------- resume-screening criterion breakdown ---------- */
+
+.criteria-breakdown-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 720px) {
+  .criteria-breakdown-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.criteria-breakdown-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.85rem;
+  border-radius: var(--radius-sm);
+}
+
+.criteria-breakdown-col-green {
+  background: var(--success-bg);
+}
+
+.criteria-breakdown-col-red {
+  background: var(--danger-bg);
+}
+
+.criteria-breakdown-col-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.criteria-breakdown-col-title-green {
+  color: var(--success-fg);
+}
+
+.criteria-breakdown-col-title-red {
+  color: var(--danger-fg);
+}
+
+.criterion-score-row {
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid transparent;
+}
+
+.criterion-score-row-green {
+  border-left-color: var(--success-fg);
+}
+
+.criterion-score-row-red {
+  border-left-color: var(--danger-fg);
+}
+
+.criterion-score-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.criterion-score-row-name {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.criterion-score-row-evidence {
+  margin: 0.3rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.criterion-score-row-note {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* ---------- transcript viewer ---------- */

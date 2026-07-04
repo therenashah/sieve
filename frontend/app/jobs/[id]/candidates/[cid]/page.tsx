@@ -18,9 +18,80 @@ import type {
   CandidateRound,
   InterviewSessionDetail,
   InterviewSessionSummary,
+  ResumeScreeningCriterionScore,
   ScreeningAnswer,
   ScreeningSessionSummary,
 } from "@/lib/types";
+
+// A criterion is "working" at 6/10 or above — matches the 3/6/9 anchor convention
+// the rubric-generation prompt itself uses (6 = solid/production-level evidence).
+const CRITERION_PASS_THRESHOLD = 6;
+
+function CriterionScoreRow({
+  criterion,
+  tone,
+}: {
+  criterion: ResumeScreeningCriterionScore;
+  tone: "green" | "red";
+}) {
+  return (
+    <div className={`criterion-score-row criterion-score-row-${tone}`}>
+      <div className="criterion-score-row-top">
+        <span className="criterion-score-row-name">{criterion.name}</span>
+        <span className={`score-pill ${tone === "green" ? "score-high" : "score-low"}`}>
+          {criterion.score}/10
+        </span>
+      </div>
+      <p className="criterion-score-row-evidence">
+        {criterion.evidence === "not found" ? (
+          <em>No evidence found in the resume.</em>
+        ) : (
+          `"${criterion.evidence}"`
+        )}
+      </p>
+      {criterion.note && <p className="criterion-score-row-note">{criterion.note}</p>}
+    </div>
+  );
+}
+
+function ResumeScoringBreakdown({ criteria }: { criteria: ResumeScreeningCriterionScore[] }) {
+  if (criteria.length === 0) return null;
+
+  const strengths = [...criteria]
+    .filter((c) => c.score >= CRITERION_PASS_THRESHOLD)
+    .sort((a, b) => b.score - a.score);
+  const weaknesses = [...criteria]
+    .filter((c) => c.score < CRITERION_PASS_THRESHOLD)
+    .sort((a, b) => a.score - b.score);
+
+  return (
+    <div>
+      <p className="section-label" style={{ margin: "0.75rem 0 0.4rem" }}>
+        Scoring breakdown by criterion
+      </p>
+      <div className="criteria-breakdown-grid">
+        <div className="criteria-breakdown-col criteria-breakdown-col-green">
+          <p className="criteria-breakdown-col-title criteria-breakdown-col-title-green">
+            ✓ Works well ({strengths.length})
+          </p>
+          {strengths.length === 0 && <p className="round-empty">Nothing scored {CRITERION_PASS_THRESHOLD}+ yet.</p>}
+          {strengths.map((c) => (
+            <CriterionScoreRow key={c.criterion_id} criterion={c} tone="green" />
+          ))}
+        </div>
+        <div className="criteria-breakdown-col criteria-breakdown-col-red">
+          <p className="criteria-breakdown-col-title criteria-breakdown-col-title-red">
+            ✕ Needs work ({weaknesses.length})
+          </p>
+          {weaknesses.length === 0 && <p className="round-empty">No weak criteria — clean sheet.</p>}
+          {weaknesses.map((c) => (
+            <CriterionScoreRow key={c.criterion_id} criterion={c} tone="red" />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const ROUND_SUBTITLES: Record<string, string> = {
   resume_screening: "Match score & gate check",
@@ -370,7 +441,21 @@ function CandidateDetailInner() {
                 result={round.result}
                 emptyHint={ROUND_EMPTY_HINTS[round.round_key] ?? "Not started yet."}
                 extra={
-                  round.round_key === "hr_screening" && completedSessions.length > 0 ? (
+                  round.round_key === "resume_screening" && round.result?.criteria ? (
+                    <>
+                      {candidate.is_overqualified && (
+                        <div className="overqualified-callout">
+                          <span>⚠️</span>
+                          <div>
+                            <strong>Possibly overqualified</strong>
+                            {candidate.overqualification_reason ||
+                              "Recent experience reads more senior than this role — still ranked on merit, just flagged for review."}
+                          </div>
+                        </div>
+                      )}
+                      <ResumeScoringBreakdown criteria={round.result.criteria} />
+                    </>
+                  ) : round.round_key === "hr_screening" && completedSessions.length > 0 ? (
                     <div>
                       <p className="section-label" style={{ margin: "0.75rem 0 0.4rem" }}>
                         Chat transcripts

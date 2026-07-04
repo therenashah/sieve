@@ -110,15 +110,24 @@ def _criteria_block(criteria: list[Criterion]) -> str:
 async def score_candidate(
     resume_text: str,
     rubric: Rubric,
+    job_title: str = "",
+    jd_text: str = "",
     only_criteria: list[str] | None = None,
 ) -> ScoreSheet:
-    """Score one candidate against `rubric` in a single LLM call covering every requested criterion."""
+    """Score one candidate against `rubric` in a single LLM call covering every requested
+    criterion, plus a seniority-mismatch ("overqualified") judgment against `job_title`/`jd_text`.
+    """
     criteria = rubric.criteria
     if only_criteria is not None:
         wanted = set(only_criteria)
         criteria = [c for c in criteria if c.id in wanted]
 
-    prompt = SCORING_PROMPT.format(criteria_block=_criteria_block(criteria), resume_text=resume_text)
+    prompt = SCORING_PROMPT.format(
+        job_title=job_title or "this role",
+        criteria_block=_criteria_block(criteria),
+        jd_text=jd_text or "(not available)",
+        resume_text=resume_text,
+    )
     sheet = await call_structured(prompt, ScoreSheet, purpose="score_candidate")
     return sheet.validate_criteria([c.id for c in criteria])
 
@@ -146,6 +155,10 @@ async def score_pool(job_id: int, rubric_id: int, only_criteria: list[str] | Non
             version=rubric_row["version"],
             criteria=[Criterion(**c) for c in json.loads(rubric_row["criteria_json"])],
         )
+
+        job_row = conn.execute("SELECT title, jd_text FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        job_title = job_row["title"] if job_row else ""
+        jd_text = job_row["jd_text"] if job_row else ""
 
         candidates = [
             dict(r)
@@ -187,7 +200,9 @@ async def score_pool(job_id: int, rubric_id: int, only_criteria: list[str] | Non
                     )
                     conn.commit()
 
-            sheet = await score_candidate(candidate["resume_text"], rubric, only_criteria=only_criteria)
+            sheet = await score_candidate(
+                candidate["resume_text"], rubric, job_title, jd_text, only_criteria=only_criteria
+            )
 
             with get_db() as conn:
                 for s in sheet.scores:
@@ -199,6 +214,10 @@ async def score_pool(job_id: int, rubric_id: int, only_criteria: list[str] | Non
                                score = excluded.score, evidence = excluded.evidence, note = excluded.note""",
                         (candidate_id, rubric_id, s.criterion_id, s.score, s.evidence, s.note),
                     )
+                conn.execute(
+                    "UPDATE candidates SET is_overqualified = ?, overqualification_reason = ? WHERE id = ?",
+                    (int(sheet.is_overqualified), sheet.overqualification_reason or None, candidate_id),
+                )
                 conn.execute(
                     "UPDATE candidates SET status = 'SCORED', error_reason = NULL WHERE id = ?",
                     (candidate_id,),

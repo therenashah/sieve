@@ -526,6 +526,59 @@ async def apply_rubric_edit(job_id: int, proposed: Rubric, background_tasks: Bac
     }
 
 
+def _compute_pipeline_statuses(conn, job_id: int) -> dict[int, str]:
+    """Plain-English pipeline status per candidate: 'Not started', 'R1 completed',
+    'R2 pending', 'All rounds completed'. Mirrors get_leaderboard's per-candidate status
+    logic exactly (kept as a standalone helper rather than refactoring that endpoint, to
+    avoid touching its already-tested code) so both pages show the same value for the
+    same candidate rather than two different homegrown status concepts.
+    """
+    round_defs = conn.execute(
+        "SELECT round_key FROM job_rounds WHERE job_id = ? ORDER BY order_index ASC", (job_id,)
+    ).fetchall()
+    rounds = [r["round_key"] for r in round_defs]
+    if not rounds:
+        return {}
+
+    scores_by_candidate: dict[int, dict[str, int | None]] = {}
+    for row in conn.execute(
+        """SELECT rr.candidate_id, rr.round, rr.score FROM round_results rr
+           JOIN candidates c ON c.id = rr.candidate_id WHERE c.job_id = ?""",
+        (job_id,),
+    ).fetchall():
+        scores_by_candidate.setdefault(row["candidate_id"], {})[row["round"]] = row["score"]
+
+    has_active_session = {
+        row["candidate_id"]
+        for row in conn.execute(
+            "SELECT DISTINCT candidate_id FROM screening_sessions WHERE job_id = ? AND status = 'active'",
+            (job_id,),
+        ).fetchall()
+    }
+
+    statuses: dict[int, str] = {}
+    for row in conn.execute("SELECT id FROM candidates WHERE job_id = ?", (job_id,)).fetchall():
+        cid = row["id"]
+        cand_scores = scores_by_candidate.get(cid, {})
+        completed_count = 0
+        first_incomplete_key = None
+        for rk in rounds:
+            if cand_scores.get(rk) is not None:
+                completed_count += 1
+            elif first_incomplete_key is None:
+                first_incomplete_key = rk
+
+        if completed_count == len(rounds):
+            statuses[cid] = "All rounds completed"
+        elif first_incomplete_key == "hr_screening" and cid in has_active_session:
+            statuses[cid] = f"R{completed_count + 1} pending"
+        elif completed_count > 0:
+            statuses[cid] = f"R{completed_count} completed"
+        else:
+            statuses[cid] = "Not started"
+    return statuses
+
+
 @router.get("/{job_id}/candidates")
 async def list_candidates(job_id: int, filter: str | None = Query(default=None), version: int | None = None):
     """Candidates for this job, ranked against the rubric when one exists.
@@ -549,6 +602,21 @@ async def list_candidates(job_id: int, filter: str | None = Query(default=None),
             "SELECT * FROM candidates WHERE job_id = ? ORDER BY match_score DESC, id ASC", (job_id,)
         ).fetchall()
 
+        # Latest HR-screening session status per candidate, so the grid can show whether a
+        # screening was already triggered (and its state) without an extra round-trip.
+        screening_status_by_candidate = {
+            r["candidate_id"]: r["status"]
+            for r in conn.execute(
+                """SELECT candidate_id, status FROM screening_sessions
+                   WHERE job_id = ? AND id IN (
+                       SELECT MAX(id) FROM screening_sessions WHERE job_id = ? GROUP BY candidate_id
+                   )""",
+                (job_id, job_id),
+            ).fetchall()
+        }
+
+        pipeline_statuses = _compute_pipeline_statuses(conn, job_id)
+
     base_by_id: dict[int, dict] = {}
     order: list[int] = []
     for row in rows:
@@ -556,6 +624,9 @@ async def list_candidates(job_id: int, filter: str | None = Query(default=None),
         candidate["profile"] = json.loads(candidate.pop("profile_json"))
         screening_result_json = candidate.pop("screening_result_json")
         candidate["screening_result"] = json.loads(screening_result_json) if screening_result_json else None
+        candidate["is_overqualified"] = bool(candidate["is_overqualified"])
+        candidate["screening_session_status"] = screening_status_by_candidate.get(candidate["id"])
+        candidate["pipeline_status"] = pipeline_statuses.get(candidate["id"])
         base_by_id[candidate["id"]] = candidate
         order.append(candidate["id"])
 
@@ -728,6 +799,41 @@ async def get_candidate_detail(job_id: int, candidate_id: int):
             "updated_at": row["updated_at"],
         }
 
+    # Full per-criterion breakdown for resume_screening — round_results.flags_json only
+    # keeps the extremes (score<=3 or >=8); the candidate page's detailed explainability
+    # view needs every criterion's score, so attach it separately here rather than
+    # changing the generic round_results shape every other round also uses.
+    if "resume_screening" in results_by_round:
+        with get_db() as conn:
+            latest_scored_rubric = conn.execute(
+                "SELECT rubric_id FROM criterion_scores WHERE candidate_id = ? ORDER BY rubric_id DESC LIMIT 1",
+                (candidate_id,),
+            ).fetchone()
+            criteria_detail = []
+            if latest_scored_rubric:
+                used_rubric_id = latest_scored_rubric["rubric_id"]
+                rubric_row = conn.execute(
+                    "SELECT criteria_json FROM rubrics WHERE id = ?", (used_rubric_id,)
+                ).fetchone()
+                criteria_by_id = {c["id"]: c for c in json.loads(rubric_row["criteria_json"])} if rubric_row else {}
+                score_rows = conn.execute(
+                    "SELECT criterion_id, score, evidence, note FROM criterion_scores "
+                    "WHERE candidate_id = ? AND rubric_id = ? ORDER BY score DESC",
+                    (candidate_id, used_rubric_id),
+                ).fetchall()
+                criteria_detail = [
+                    {
+                        "criterion_id": row["criterion_id"],
+                        "name": criteria_by_id.get(row["criterion_id"], {}).get("name", row["criterion_id"]),
+                        "weight": criteria_by_id.get(row["criterion_id"], {}).get("weight"),
+                        "score": row["score"],
+                        "evidence": row["evidence"],
+                        "note": row["note"],
+                    }
+                    for row in score_rows
+                ]
+        results_by_round["resume_screening"]["criteria"] = criteria_detail
+
     rounds = [
         {
             "round_key": r["round_key"],
@@ -751,6 +857,7 @@ async def get_candidate_detail(job_id: int, candidate_id: int):
     candidate["profile"] = json.loads(candidate.pop("profile_json"))
     screening_result_json = candidate.pop("screening_result_json")
     candidate["screening_result"] = json.loads(screening_result_json) if screening_result_json else None
+    candidate["is_overqualified"] = bool(candidate["is_overqualified"])
     candidate["rounds"] = rounds
     candidate["screening_sessions"] = sessions
     return candidate
