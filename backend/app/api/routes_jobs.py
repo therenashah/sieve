@@ -224,14 +224,26 @@ async def scan_candidates(job_id: int, background_tasks: BackgroundTasks):
 @router.post("/{job_id}/filters/parse")
 async def parse_filters(job_id: int, payload: FilterParseRequest):
     """Translate HR's free-text filter request into a FilterSet, using the job's current
-    rubric so criteria mentions ("strong kubernetes") map to the right criterion id. The
-    frontend renders the result as chips and passes it back into GET /{job_id}/candidates."""
-    _get_job_or_404(job_id)
+    rubric so criteria mentions ("strong kubernetes") map to the right criterion id, and the
+    job's title/JD so role-specific wording ("engineer" for a Senior SRE role) resolves in
+    context instead of coming back unparsed. The frontend renders the result as chips and
+    passes it back into GET /{job_id}/candidates."""
+    job = _get_job_or_404(job_id)
     active_rubric = _get_latest_rubric(job_id)
     if active_rubric is None:
         raise HTTPException(status_code=400, detail="Generate a rubric before filtering candidates")
 
-    return await filters.parse_nl(payload.text, active_rubric, _CANDIDATE_STATUSES)
+    return await filters.parse_nl(
+        payload.text, active_rubric, _CANDIDATE_STATUSES, job["title"], job["jd_text"]
+    )
+
+
+@router.get("/{job_id}/filters/facets")
+async def get_filter_facets(job_id: int):
+    """Candidate-derived values (locations, common skills, experience buckets) for the
+    manually-addable checkbox filters on the resume-screening filter panel."""
+    _get_job_or_404(job_id)
+    return filters.facets(job_id)
 
 
 def _summarize_diff(changes) -> str:

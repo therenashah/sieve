@@ -92,6 +92,7 @@ class Filter(BaseModel):
     field: Literal[
         "location",
         "total_experience_years",
+        "experience_bucket",
         "skills",
         "education",
         "current_company",

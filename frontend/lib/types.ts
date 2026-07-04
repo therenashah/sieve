@@ -87,6 +87,17 @@ export interface ScanResponse {
   rubric_id: number;
 }
 
+export interface ExperienceBucket {
+  key: string;
+  label: string;
+}
+
+export interface FilterFacets {
+  locations: string[];
+  skills: string[];
+  experience_buckets: ExperienceBucket[];
+}
+
 export interface TriggerScreeningResponse {
   token: string;
   chat_url: string;

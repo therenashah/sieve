@@ -131,6 +131,13 @@ Respond with exactly this JSON shape:
 NL_FILTER_PROMPT = """\
 Translate the HR's natural-language filter request into structured filters.
 
+Job context (use this to resolve role-specific words, synonyms, and abbreviations in HR's
+request against what this job actually is — e.g. if HR writes "engineer" or "candidate"
+while the job below is a Senior SRE role, read that as referring to this role and its
+domain, not as a separate keyword to search for literally):
+Job title: {job_title}
+Job description: {jd_text}
+
 Allowed fields and operators:
 - location (eq, neq, contains) — city name
 - total_experience_years (eq, neq, gte, lte) — number of years
@@ -144,15 +151,24 @@ Allowed fields and operators:
   criterion in the rubric". gte/lte always require criterion_id.
 
 Rubric criteria (map a skill/requirement mentioned in HR's text to the matching criterion
-id when relevant):
+id when relevant — use the job context above to recognize a requirement even when it's
+phrased loosely or as a synonym/abbreviation of the criterion, e.g. "k8s" for a Kubernetes
+criterion, "6+ yoe"/"6+ yrs" for total_experience_years gte 6):
 {criteria_block}
 
 HR's request:
 {text}
 
-Break the request into as many filters as needed (AND-combined). If part of the request
-can't be mapped to any of the above, put that exact fragment into "unparsed" instead of
-guessing a filter for it.
+Be generous and context-sensitive. Resolve abbreviations and loose phrasing against the job
+context and rubric above before giving up on a fragment. A generic reference to the role
+itself (e.g. "engineer", "candidate", "someone") is not a filter and is not unparsed either
+— it's just how HR referred to the person they're describing; skip it silently. Only put a
+fragment into "unparsed" if, after considering the job context and rubric, it genuinely
+cannot be mapped to any field or criterion above. Never refuse to respond — always return
+your best-effort interpretation of everything that can reasonably be mapped, even partial
+matches, so filtering only comes back empty when no candidate genuinely qualifies.
+
+Break the request into as many filters as needed (AND-combined).
 
 Respond with exactly this JSON shape:
 {{"filters": [{{"field": "...", "op": "...", "value": ..., "criterion_id": "..." or null}}, ...], "unparsed": ["..."]}}

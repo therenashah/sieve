@@ -4,6 +4,7 @@ import type {
   CandidateDetail,
   ChatTurnResponse,
   CvUploadResult,
+  FilterFacets,
   FilterSet,
   HealthResponse,
   InterviewSessionDetail,
@@ -193,6 +194,10 @@ export function parseFilters(jobId: number | string, text: string): Promise<Filt
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
+}
+
+export function getFilterFacets(jobId: number | string): Promise<FilterFacets> {
+  return authFetch(`/api/jobs/${jobId}/filters/facets`);
 }
 
 export function getCandidateDetail(

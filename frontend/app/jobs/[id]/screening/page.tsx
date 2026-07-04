@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import FilterModal from "@/components/FilterModal";
 import Navbar from "@/components/Navbar";
 import RequireAuth from "@/components/RequireAuth";
 import TriggerScreeningModal from "@/components/TriggerScreeningModal";
@@ -12,7 +13,6 @@ import {
   getJob,
   getRubric,
   listCandidates,
-  parseFilters,
   rejectCandidate,
   rubricChat,
   scanCandidates,
@@ -85,10 +85,9 @@ function ScreeningPageInner() {
   const [proposedRubric, setProposedRubric] = useState<Rubric | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
 
-  const [filterInput, setFilterInput] = useState("");
   const [activeFilterSet, setActiveFilterSet] = useState<FilterSet | null>(null);
   const [unparsedFragments, setUnparsedFragments] = useState<string[]>([]);
-  const [filterLoading, setFilterLoading] = useState(false);
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeFilterRef = useRef<FilterSet | null>(null);
@@ -297,29 +296,20 @@ function ScreeningPageInner() {
     }
   }
 
-  async function applyFilterText() {
-    if (!filterInput.trim()) return;
-    setFilterLoading(true);
+  async function handleApplyFilters(fs: FilterSet | null) {
+    activeFilterRef.current = fs;
+    setActiveFilterSet(fs);
+    setUnparsedFragments(fs?.unparsed ?? []);
     setError("");
     try {
-      const fs = await parseFilters(jobId, filterInput.trim());
-      activeFilterRef.current = fs;
-      setActiveFilterSet(fs);
-      setUnparsedFragments(fs.unparsed);
       await loadCandidates(fs);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't parse that filter.");
-    } finally {
-      setFilterLoading(false);
+      setError(err instanceof Error ? err.message : "Couldn't apply that filter.");
     }
   }
 
   function clearFilters() {
-    activeFilterRef.current = null;
-    setActiveFilterSet(null);
-    setUnparsedFragments([]);
-    setFilterInput("");
-    loadCandidates(null);
+    handleApplyFilters(null);
   }
 
   return (
@@ -504,17 +494,8 @@ function ScreeningPageInner() {
             >
               <p className="section-label">{candidates.length} candidates</p>
               <div style={{ display: "flex", gap: "0.5rem" }}>
-                <input
-                  type="text"
-                  className="text-input"
-                  value={filterInput}
-                  onChange={(e) => setFilterInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && applyFilterText()}
-                  placeholder='e.g. "5+ years in Mumbai with strong kubernetes"'
-                  style={{ width: "22rem" }}
-                />
-                <button className="btn btn-secondary" onClick={applyFilterText} disabled={filterLoading}>
-                  {filterLoading ? "Filtering…" : "Filter"}
+                <button className="btn btn-secondary" onClick={() => setFilterModalOpen(true)}>
+                  Filter
                 </button>
                 {activeFilterSet && (
                   <button className="btn btn-secondary" onClick={clearFilters}>
@@ -664,6 +645,15 @@ function ScreeningPageInner() {
             // Refresh so the Decision column reflects a newly-triggered screening.
             refresh();
           }}
+        />
+      )}
+
+      {filterModalOpen && (
+        <FilterModal
+          jobId={jobId}
+          initialFilterSet={activeFilterSet}
+          onApply={handleApplyFilters}
+          onClose={() => setFilterModalOpen(false)}
         />
       )}
     </>
