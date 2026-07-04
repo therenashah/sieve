@@ -76,18 +76,55 @@ def _log_llm_call(purpose: str, model: str, latency_ms: int, ok: bool) -> None:
         conn.commit()
 
 
+def _resolve_model(model: str | None) -> str:
+    return model or get_settings().bedrock_model_id
+
+
+# Bedrock error codes that mean "this specific model isn't usable here" (profile not
+# enabled, no access, unknown id) — as opposed to transient throttling/5xx. When a
+# smarter model was requested and hits one of these, we transparently fall back to the
+# default model so the interview never hard-fails on an un-provisioned Sonnet profile.
+_MODEL_UNAVAILABLE_CODES = {
+    "AccessDeniedException",
+    "ValidationException",
+    "ResourceNotFoundException",
+    "UnrecognizedClientException",
+}
+
+
+def _is_model_unavailable(exc: ClientError) -> bool:
+    return exc.response.get("Error", {}).get("Code", "") in _MODEL_UNAVAILABLE_CODES
+
+
 async def call_text(
     system: str,
     messages: list[dict],
     *,
     max_tokens: int = 1024,
+    temperature: float = 0.4,
+    model: str | None = None,
 ) -> str:
-    model = get_settings().bedrock_model_id
+    # A lower-than-default temperature measurably improves the screening chatbot's
+    # adherence to its per-turn instructions (e.g. "ask exactly this question") without
+    # making replies sound robotic — Bedrock's default (~1.0) was prone to the model
+    # improvising its own follow-up questions instead of following the turn's script.
+    model = _resolve_model(model)
+    default_model = get_settings().bedrock_model_id
     async with _semaphore:
         started = time.monotonic()
         try:
-            text = await asyncio.to_thread(bedrock.invoke_claude, system, messages, max_tokens=max_tokens)
-        except ClientError:
+            text = await asyncio.to_thread(
+                bedrock.invoke_claude, system, messages, max_tokens=max_tokens, temperature=temperature, model_id=model
+            )
+        except ClientError as exc:
+            if model != default_model and _is_model_unavailable(exc):
+                _log_llm_call(f"call_text[{model}->fallback]", model, int((time.monotonic() - started) * 1000), ok=False)
+                text = await asyncio.to_thread(
+                    bedrock.invoke_claude, system, messages, max_tokens=max_tokens, temperature=temperature,
+                    model_id=default_model,
+                )
+                _log_llm_call("call_text", default_model, int((time.monotonic() - started) * 1000), ok=True)
+                return text
             _log_llm_call("call_text", model, int((time.monotonic() - started) * 1000), ok=False)
             raise
         _log_llm_call("call_text", model, int((time.monotonic() - started) * 1000), ok=True)
@@ -99,15 +136,29 @@ async def call_json(
     messages: list[dict],
     *,
     max_tokens: int = 512,
+    temperature: float = 0.2,
+    model: str | None = None,
 ) -> dict:
-    model = get_settings().bedrock_model_id
+    model = _resolve_model(model)
+    default_model = get_settings().bedrock_model_id
     async with _semaphore:
         started = time.monotonic()
         try:
             result = await asyncio.to_thread(
-                bedrock.invoke_claude_json, system, messages, max_tokens=max_tokens
+                bedrock.invoke_claude_json, system, messages, max_tokens=max_tokens, temperature=temperature, model_id=model
             )
-        except (ClientError, ValueError):
+        except ClientError as exc:
+            if model != default_model and _is_model_unavailable(exc):
+                _log_llm_call(f"call_json[{model}->fallback]", model, int((time.monotonic() - started) * 1000), ok=False)
+                result = await asyncio.to_thread(
+                    bedrock.invoke_claude_json, system, messages, max_tokens=max_tokens, temperature=temperature,
+                    model_id=default_model,
+                )
+                _log_llm_call("call_json", default_model, int((time.monotonic() - started) * 1000), ok=True)
+                return result
+            _log_llm_call("call_json", model, int((time.monotonic() - started) * 1000), ok=False)
+            raise
+        except ValueError:
             _log_llm_call("call_json", model, int((time.monotonic() - started) * 1000), ok=False)
             raise
         _log_llm_call("call_json", model, int((time.monotonic() - started) * 1000), ok=True)

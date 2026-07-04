@@ -1,10 +1,13 @@
 """Screening chat state machine.
 
-Phases, in order: GREETING -> MANDATORY -> PROFILE_FOLLOWUP -> SECLORE_QA -> ENDED.
-Each phase is bounded (fixed question list, or a config-driven max turn count),
-so the conversation can never run open-ended. All LLM calls go through
-`app.llm.client`; all persistence goes through the SQLite tables defined in
-`app.db`.
+Phases, in order: GREETING (pre-start only, never has messages) -> MANDATORY ->
+PROFILE_FOLLOWUP -> SECLORE_QA -> ENDED. The GREETING->MANDATORY opening turn is a
+fixed, deterministic message (see prompts.build_intro_message) — no LLM call, so
+the "about Seclore" boilerplate and the exact first question can never drift or be
+improvised. Every other phase is bounded (fixed question list, or a config-driven
+max turn count), so the conversation can never run open-ended. All LLM calls go
+through `app.llm.client`; all persistence goes through the SQLite tables defined
+in `app.db`.
 """
 
 import json
@@ -87,6 +90,30 @@ def get_mandatory_questions(job_id: int) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_session_questions(session: dict) -> list[dict]:
+    """The questions this particular session should ask, in order.
+
+    If the recruiter picked a specific subset when triggering the screening
+    link (the trigger modal), use exactly that subset/order. Otherwise fall
+    back to every mandatory question on the job (legacy/no-modal path).
+    """
+    selected_ids = session.get("selected_question_ids")
+    if not selected_ids:
+        return get_mandatory_questions(session["job_id"])
+
+    ids = json.loads(selected_ids)
+    if not ids:
+        return get_mandatory_questions(session["job_id"])
+
+    with get_db() as conn:
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT * FROM job_questions WHERE id IN ({placeholders})", ids
+        ).fetchall()
+    by_id = {row["id"]: dict(row) for row in rows}
+    return [by_id[qid] for qid in ids if qid in by_id]
+
+
 def _get_session_row(token: str) -> dict | None:
     with get_db() as conn:
         row = conn.execute("SELECT * FROM screening_sessions WHERE token = ?", (token,)).fetchone()
@@ -161,7 +188,7 @@ def _llm_history(session_id: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def create_session(job_id: int, candidate_id: int) -> dict:
+def create_session(job_id: int, candidate_id: int, selected_question_ids: list[int] | None = None) -> dict:
     get_job(job_id)  # raises if missing
     candidate = get_candidate(candidate_id)
 
@@ -176,12 +203,14 @@ def create_session(job_id: int, candidate_id: int) -> dict:
     token = secrets.token_urlsafe(24)
     now = _now()
     expires_at = now + timedelta(minutes=settings.screening_link_ttl_minutes)
+    question_ids_json = json.dumps(selected_question_ids) if selected_question_ids else None
 
     with get_db() as conn:
         cur = conn.execute(
-            """INSERT INTO screening_sessions (token, candidate_id, job_id, status, phase, created_at, expires_at)
-               VALUES (?, ?, ?, 'active', 'GREETING', ?, ?)""",
-            (token, candidate_id, job_id, _iso(now), _iso(expires_at)),
+            """INSERT INTO screening_sessions
+                   (token, candidate_id, job_id, status, phase, selected_question_ids, created_at, expires_at)
+               VALUES (?, ?, ?, 'active', 'GREETING', ?, ?, ?)""",
+            (token, candidate_id, job_id, question_ids_json, _iso(now), _iso(expires_at)),
         )
         conn.commit()
         session_id = cur.lastrowid
@@ -218,7 +247,7 @@ async def _generate_json(session: dict, candidate: dict, job: dict, turn_instruc
     return await llm_client.call_json(system, _llm_history(session["id"]))
 
 
-async def _finalize_session(session: dict) -> None:
+async def _finalize_session(session: dict, candidate: dict) -> None:
     _update_session(
         session["id"],
         status="completed",
@@ -226,7 +255,7 @@ async def _finalize_session(session: dict) -> None:
         completed_at=_iso(_now()),
     )
     try:
-        await summarize_session(session["id"])
+        await summarize_session(session["id"], candidate["profile"])
     except Exception:
         # Summary generation failing should never block ending the session —
         # the raw transcript/answers are already persisted regardless.
@@ -253,22 +282,26 @@ async def start_session(token: str) -> dict:
 
     candidate = get_candidate(session["candidate_id"])
     job = get_job(session["job_id"])
-    questions = get_mandatory_questions(job["id"])
+    questions = get_session_questions(session)
 
-    if not questions:
-        # No mandatory questions configured — skip straight to the Seclore Q&A phase.
-        reply = await _generate(session, candidate, job, prompts.SECLORE_QA_INTRO_INSTRUCTION)
-        _update_session(session["id"], phase="SECLORE_QA")
-        _save_message(session["id"], "assistant", reply, "SECLORE_QA")
-        return {"session_status": "active", "phase": "SECLORE_QA", "messages": [{"role": "assistant", "content": reply}]}
+    # Fixed, deterministic opening — no LLM call, so the "about Seclore" boilerplate (and
+    # the first question itself) can never drift or be hallucinated/improvised. We already
+    # have the candidate's name on file, so there's no separate "what's your name" round
+    # trip. Always opens with a warm icebreaker (never a direct/logistics question like
+    # "are you okay relocating?") before moving into the recruiter's selected questions —
+    # current_question_index=-1 marks "icebreaker asked, real questions haven't started".
+    first_question = prompts.ICEBREAKER_QUESTION if questions else None
+    reply = prompts.build_intro_message(candidate["name"], job["title"], first_question)
 
-    instruction = prompts.greeting_and_first_question(candidate["name"], job["title"], questions[0]["question_text"])
-    reply = await _generate(session, candidate, job, instruction)
+    if questions:
+        _update_session(session["id"], phase="MANDATORY", current_question_index=-1)
+        phase = "MANDATORY"
+    else:
+        _update_session(session["id"], phase="SECLORE_QA", seclore_qa_count=0)
+        phase = "SECLORE_QA"
+    _save_message(session["id"], "assistant", reply, phase)
 
-    _update_session(session["id"], phase="MANDATORY", current_question_index=0)
-    _save_message(session["id"], "assistant", reply, "MANDATORY")
-
-    return {"session_status": "active", "phase": "MANDATORY", "messages": [{"role": "assistant", "content": reply}]}
+    return {"session_status": "active", "phase": phase, "messages": [{"role": "assistant", "content": reply}]}
 
 
 def _terminal_response(session: dict) -> dict:
@@ -300,15 +333,26 @@ async def handle_message(token: str, user_text: str) -> dict:
 
 async def _handle_mandatory(session: dict, candidate: dict, job: dict, user_text: str) -> dict:
     settings = get_settings()
-    questions = get_mandatory_questions(job["id"])
+    questions = get_session_questions(session)
     index = session["current_question_index"]
-    current_question = questions[index]
 
+    if index == -1:
+        # They just answered the icebreaker, not one of the real screening questions —
+        # record it as such (not tied to a job_questions row) and move into question 0.
+        _save_answer(session["id"], None, prompts.ICEBREAKER_QUESTION, "icebreaker", user_text)
+        instruction = prompts.ask_next_mandatory_question(questions[0]["question_text"], new_section=True)
+        reply = await _generate(session, candidate, job, instruction)
+        _update_session(session["id"], current_question_index=0)
+        _save_message(session["id"], "assistant", reply, "MANDATORY")
+        return {"session_status": "active", "phase": "MANDATORY", "messages": [{"role": "assistant", "content": reply}]}
+
+    current_question = questions[index]
     _save_answer(session["id"], current_question["id"], current_question["question_text"], "mandatory", user_text)
 
     next_index = index + 1
     if next_index < len(questions):
-        instruction = prompts.ask_next_mandatory_question(questions[next_index]["question_text"])
+        new_section = questions[next_index].get("source") != current_question.get("source")
+        instruction = prompts.ask_next_mandatory_question(questions[next_index]["question_text"], new_section)
         reply = await _generate(session, candidate, job, instruction)
         _update_session(session["id"], current_question_index=next_index)
         _save_message(session["id"], "assistant", reply, "MANDATORY")
@@ -346,7 +390,7 @@ async def _handle_profile_followup(session: dict, candidate: dict, job: dict, us
 
 async def _start_seclore_qa(session: dict, candidate: dict, job: dict) -> dict:
     _update_session(session["id"], phase="SECLORE_QA", seclore_qa_count=0)
-    reply = await _generate(session, candidate, job, prompts.SECLORE_QA_INTRO_INSTRUCTION)
+    reply = prompts.build_seclore_qa_intro_message(candidate["name"])
     _save_message(session["id"], "assistant", reply, "SECLORE_QA")
     return {"session_status": "active", "phase": "SECLORE_QA", "messages": [{"role": "assistant", "content": reply}]}
 
@@ -356,9 +400,9 @@ async def _handle_seclore_qa(session: dict, candidate: dict, job: dict, user_tex
     classification = await _generate_json(session, candidate, job, prompts.SECLORE_QA_CLASSIFY_INSTRUCTION)
 
     if not classification.get("has_more_questions"):
-        reply = await _generate(session, candidate, job, prompts.CLOSING_INSTRUCTION)
+        reply = prompts.build_closing_message(candidate["name"])
         _save_message(session["id"], "assistant", reply, "ENDED")
-        await _finalize_session(session)
+        await _finalize_session(session, candidate)
         return {"session_status": "completed", "phase": "ENDED", "messages": [{"role": "assistant", "content": reply}]}
 
     query = classification.get("question_for_kb") or user_text
@@ -368,10 +412,13 @@ async def _handle_seclore_qa(session: dict, candidate: dict, job: dict, user_tex
     is_last_turn = new_count >= settings.max_seclore_qa_turns
     instruction = prompts.answer_seclore_question(is_last_turn)
     reply = await _generate(session, candidate, job, instruction, kb_context=kb_context)
+
+    if is_last_turn:
+        reply = f"{reply}\n\n{prompts.build_closing_message(candidate['name'])}"
     _save_message(session["id"], "assistant", reply, "SECLORE_QA")
 
     if is_last_turn:
-        await _finalize_session(session)
+        await _finalize_session(session, candidate)
         return {"session_status": "completed", "phase": "ENDED", "messages": [{"role": "assistant", "content": reply}]}
 
     _update_session(session["id"], seclore_qa_count=new_count)

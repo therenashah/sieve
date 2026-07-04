@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     jd_text TEXT NOT NULL DEFAULT '',   -- raw JD text; resume-screening pipeline reads this directly
     jd_filename TEXT,
     jd_path TEXT,
-    status TEXT NOT NULL DEFAULT 'draft',   -- draft | active
+    status TEXT NOT NULL DEFAULT 'draft',   -- draft | active | archived
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS job_questions (
     job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     question_text TEXT NOT NULL,
     order_index INTEGER NOT NULL,
-    is_mandatory INTEGER NOT NULL DEFAULT 1
+    is_mandatory INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'default'   -- default | ai | custom
 );
 
 CREATE TABLE IF NOT EXISTS candidates (
@@ -35,6 +36,14 @@ CREATE TABLE IF NOT EXISTS candidates (
     profile_json TEXT NOT NULL DEFAULT '{}',
     status TEXT DEFAULT 'PARSING',   -- PARSING | SCORING | SCORED | ERROR (resume-screening pipeline state)
     error_reason TEXT,
+    -- HR's resume-screening decision (distinct from the tracker-imported *_status columns
+    -- below, which get overwritten on every tracker re-sync). NULL | 'rejected' |
+    -- 'shortlisted'. Reversible, mutually exclusive (setting one clears the other).
+    screening_decision TEXT,
+    -- Seniority-mismatch flag from scoring: candidate's recent experience reads as more
+    -- senior than this role. Does not affect rank/overall score, just an extra signal.
+    is_overqualified INTEGER NOT NULL DEFAULT 0,
+    overqualification_reason TEXT,
     -- Output of the resume-screening pipeline: mandatory gate result, fitment
     -- score, recommendation, strengths/gaps. NULL means not yet screened.
     screening_result_json TEXT,
@@ -101,6 +110,7 @@ CREATE TABLE IF NOT EXISTS screening_sessions (
     pending_question_text TEXT,
     profile_followup_count INTEGER NOT NULL DEFAULT 0,
     seclore_qa_count INTEGER NOT NULL DEFAULT 0,
+    selected_question_ids TEXT,      -- JSON list of job_questions.id chosen by the recruiter for this trigger
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL,
     completed_at TEXT,
@@ -126,6 +136,94 @@ CREATE TABLE IF NOT EXISTS screening_answers (
     answer_text TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- One row per (candidate, round). Upserted whenever a round produces a fresh
+-- evaluation — e.g. the HR screening chat finishing runs an LLM pass and
+-- writes its result here. `score` is that round's own opinion, not a global
+-- fitment number; rounds a pipeline hasn't run yet (e.g. resume_screening
+-- until that pipeline ships) simply have no row, and the UI shows it empty.
+CREATE TABLE IF NOT EXISTS round_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    round TEXT NOT NULL,             -- resume_screening | hr_screening | l1 | l2 | l3 | pre_offer
+    score INTEGER,
+    summary TEXT,
+    key_highlights_json TEXT,        -- JSON list of strings
+    flags_json TEXT,                 -- JSON list of {"type": "red"|"green", "detail": "..."}
+    session_id INTEGER REFERENCES screening_sessions(id) ON DELETE SET NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(candidate_id, round)
+);
+
+-- The rounds configured for a job, in pipeline order. resume_screening and
+-- hr_screening are seeded as builtins (is_builtin=1, can't be deleted) since
+-- they're wired to dedicated pipelines; anything else is an optional round the
+-- recruiter added from a template (or fully custom), most of them AI-interview
+-- rounds whose ai_config_json drives what a future AI interviewer bot gets
+-- told/does — this table is that bot's config source, not just UI decoration.
+CREATE TABLE IF NOT EXISTS job_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    round_key TEXT NOT NULL,         -- stable key, matches round_results.round
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    order_index INTEGER NOT NULL,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    is_ai_based INTEGER NOT NULL DEFAULT 0,
+    ai_config_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(job_id, round_key)
+);
+
+-- One AI interview per (candidate, round) trigger. Mirrors screening_sessions but
+-- for the video/audio AI interview round: the recruiter triggers it, the candidate
+-- schedules a slot within the invite window, then joins the tokenized room. The
+-- config_json is a snapshot of the round's RoundAIConfig at trigger time, so the
+-- interviewer reads exactly what the recruiter set even if the round is edited later.
+CREATE TABLE IF NOT EXISTS interview_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    round_key TEXT NOT NULL,           -- matches job_rounds.round_key / round_results.round
+    status TEXT NOT NULL DEFAULT 'invited',   -- invited | scheduled | in_progress | completed | expired
+    phase TEXT NOT NULL DEFAULT 'INTRO',      -- INTRO | INTERVIEW | WRAPUP | ENDED
+    config_json TEXT NOT NULL DEFAULT '{}',   -- snapshot of RoundAIConfig
+    duration_minutes INTEGER NOT NULL DEFAULT 30,
+    plan_json TEXT,                    -- generated interview plan (sections/questions)
+    current_index INTEGER NOT NULL DEFAULT 0, -- index into the plan's question list
+    followups_used INTEGER NOT NULL DEFAULT 0,-- follow-ups asked on the current question
+    scheduled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,          -- invite/scheduling window end
+    started_at TEXT,
+    ended_at TEXT,
+    completed_at TEXT,
+    recording_path TEXT,
+    summary TEXT,
+    score INTEGER,
+    scorecard_json TEXT                -- full evaluation detail (competencies, recommendation)
+);
+
+CREATE TABLE IF NOT EXISTS interview_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES interview_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,                -- assistant | candidate
+    content TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'talk', -- intro | question | followup | repeat | answer | wrapup | closing
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Lightweight proctoring/telemetry trail (tab switches, camera off, etc.).
+CREATE TABLE IF NOT EXISTS interview_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES interview_sessions(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_interview_cand ON interview_sessions(job_id, candidate_id, round_key);
 
 CREATE TABLE IF NOT EXISTS recruiter_sessions (
     token TEXT PRIMARY KEY,
@@ -191,11 +289,75 @@ _CANDIDATE_COLUMNS = {
     "l3_status": "TEXT",
     "pre_offer_status": "TEXT",
     "resume_path": "TEXT",
+    "screening_decision": "TEXT",
+    "is_overqualified": "INTEGER NOT NULL DEFAULT 0",
+    "overqualification_reason": "TEXT",
 }
+_JOB_QUESTION_COLUMNS = {"source": "TEXT NOT NULL DEFAULT 'default'"}
+_SCREENING_SESSION_COLUMNS = {"selected_question_ids": "TEXT"}
+
+# Generic HR screening questions every job should have regardless of its JD —
+# inserted for new jobs at creation time, and backfilled onto any job that's
+# missing them (by exact text match, so re-running this is a no-op).
+DEFAULT_HR_QUESTIONS = [
+    "Are you comfortable working from Mumbai (or relocating)?",
+    "Why are you looking for a change?",
+    "Why are you interested in joining Seclore?",
+]
+
+# The two rounds every job pipeline has by default — seeded for new jobs and
+# backfilled onto any job created before job_rounds existed.
+BUILTIN_ROUNDS = [
+    {
+        "round_key": "resume_screening",
+        "name": "Resume Screening",
+        "description": "AI mandatory-gate check and fitment scoring against the JD-derived rubric.",
+    },
+    {
+        "round_key": "hr_screening",
+        "name": "HR Screening",
+        "description": "Conversational HR screening chat covering logistics, background, and culture fit.",
+    },
+]
+
+# Catalog of optional rounds a recruiter can add from the round management UI.
+# "custom" has no fixed round_key — the endpoint mints one (custom_1, custom_2, ...).
+ROUND_TEMPLATES = [
+    {
+        "key": "l1_interview",
+        "name": "L1 Interview",
+        "description": "First technical/managerial round assessing core competency fit.",
+    },
+    {
+        "key": "l2_interview",
+        "name": "L2 Interview",
+        "description": "Second-level interview, typically a deeper technical or leadership assessment.",
+    },
+    {
+        "key": "technical_interview_1",
+        "name": "Technical Interview 1",
+        "description": "Focused technical assessment — coding, system design, or domain expertise.",
+    },
+    {
+        "key": "technical_interview_2",
+        "name": "Technical Interview 2",
+        "description": "A second technical round, often deeper or with a different panel.",
+    },
+    {
+        "key": "custom",
+        "name": "Custom Round",
+        "description": "Define your own round from scratch.",
+    },
+]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    for table, columns in (("jobs", _JOB_COLUMNS), ("candidates", _CANDIDATE_COLUMNS)):
+    for table, columns in (
+        ("jobs", _JOB_COLUMNS),
+        ("candidates", _CANDIDATE_COLUMNS),
+        ("job_questions", _JOB_QUESTION_COLUMNS),
+        ("screening_sessions", _SCREENING_SESSION_COLUMNS),
+    ):
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         for column, ddl_type in columns.items():
             if column not in existing:
@@ -205,6 +367,46 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_job_external ON candidates(job_id, external_id)"
     )
+    _backfill_default_hr_questions(conn)
+    _backfill_builtin_rounds(conn)
+
+
+def _backfill_builtin_rounds(conn: sqlite3.Connection) -> None:
+    job_ids = [row["id"] for row in conn.execute("SELECT id FROM jobs")]
+    for job_id in job_ids:
+        existing = {
+            row["round_key"] for row in conn.execute("SELECT round_key FROM job_rounds WHERE job_id = ?", (job_id,))
+        }
+        for index, round_def in enumerate(BUILTIN_ROUNDS):
+            if round_def["round_key"] in existing:
+                continue
+            conn.execute(
+                """INSERT INTO job_rounds (job_id, round_key, name, description, order_index, is_builtin)
+                   VALUES (?, ?, ?, ?, ?, 1)""",
+                (job_id, round_def["round_key"], round_def["name"], round_def["description"], index),
+            )
+
+
+def _backfill_default_hr_questions(conn: sqlite3.Connection) -> None:
+    job_ids = [row["id"] for row in conn.execute("SELECT id FROM jobs")]
+    for job_id in job_ids:
+        existing_texts = {
+            row["question_text"]
+            for row in conn.execute("SELECT question_text FROM job_questions WHERE job_id = ?", (job_id,))
+        }
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(order_index), -1) AS m FROM job_questions WHERE job_id = ?", (job_id,)
+        ).fetchone()["m"]
+        next_index = max_order + 1
+        for question in DEFAULT_HR_QUESTIONS:
+            if question in existing_texts:
+                continue
+            conn.execute(
+                """INSERT INTO job_questions (job_id, question_text, order_index, is_mandatory, source)
+                   VALUES (?, ?, ?, 1, 'default')""",
+                (job_id, question, next_index),
+            )
+            next_index += 1
 
 
 def init_db() -> None:

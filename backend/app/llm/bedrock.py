@@ -35,8 +35,13 @@ def invoke_claude(
     *,
     max_tokens: int = 1024,
     temperature: float | None = None,
+    model_id: str | None = None,
 ) -> str:
-    """messages: list of {"role": "user"|"assistant", "content": str}, Anthropic format."""
+    """messages: list of {"role": "user"|"assistant", "content": str}, Anthropic format.
+
+    `model_id` overrides the default model (used by the interview engine to pick a
+    fast vs smart Bedrock model per turn); defaults to settings.bedrock_model_id.
+    """
     settings = get_settings()
     body = {
         "anthropic_version": "bedrock-2023-05-31",
@@ -47,7 +52,7 @@ def invoke_claude(
     if temperature is not None:
         body["temperature"] = temperature
     response = _get_client().invoke_model(
-        modelId=settings.bedrock_model_id,
+        modelId=model_id or settings.bedrock_model_id,
         body=json.dumps(body),
         contentType="application/json",
         accept="application/json",
@@ -73,13 +78,17 @@ def invoke_claude_json(
     *,
     max_tokens: int = 512,
     max_retries: int = 2,
+    temperature: float | None = None,
+    model_id: str | None = None,
 ) -> dict:
     """Same as invoke_claude, but parses the reply as JSON, retrying on malformed output."""
     working_messages = list(messages)
     last_error: Exception | None = None
 
     for attempt in range(max_retries + 1):
-        text = invoke_claude(system, working_messages, max_tokens=max_tokens)
+        text = invoke_claude(
+            system, working_messages, max_tokens=max_tokens, temperature=temperature, model_id=model_id
+        )
         try:
             return json.loads(_strip_json_fence(text))
         except json.JSONDecodeError as exc:

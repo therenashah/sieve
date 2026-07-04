@@ -29,15 +29,156 @@ Respond with exactly this JSON shape:
 {{"criteria": [{{"id": "c1", "name": "...", "description": "...", "weight": 0.0}}, ...]}}
 """
 
-FITMENT_SCORING = ""
+HR_QUESTIONS_PROMPT = """\
+Based on the job description below, write 4 to 6 role-specific HR screening questions a recruiter \
+would ask a candidate in a short pre-interview chat — NOT technical interview questions, but things \
+like experience level in the role's core discipline, relevant tools/platforms, and logistics \
+(CTC/notice period only if not already generic). Keep each question short and conversational.
 
-NL_TO_FILTER = ""
+Example style (for an SRE/DevOps role):
+"Tell me about yourself and your experience in SRE/DevOps."
+"How many years of experience do you have in Site Reliability Engineering or DevOps?"
+"Which cloud platforms have you worked on (AWS/Azure/GCP)?"
+"What is your current CTC, expected CTC, and notice period?"
+
+Job description:
+{jd_text}
+
+Respond with exactly this JSON shape:
+{{"questions": ["...", "...", ...]}}
+"""
+
+PROFILE_PROMPT = """\
+Extract a structured candidate profile from the resume text below.
+
+Rules:
+- If a field is not present in the resume, use null. Never infer or guess a value that isn't stated.
+- location: current city only, normalized (e.g. "Bombay" or "Navi Mumbai" -> "Mumbai"). Strip state/country. Use the candidate's current location, not a past one.
+- total_experience_years: compute from employment date ranges in the resume (sum actual worked periods; "present"/"current" means through today). Use null if it can't be computed from the dates given.
+- skills: lowercase, deduplicated, at most 30.
+- education: list of degree/institution strings (e.g. "B.Tech Computer Science, VJTI Mumbai"), as they appear in the resume.
+- current_company: the employer for the most recent/ongoing role. Null if not stated or the candidate is not currently employed.
+- notice_period: only if explicitly stated in the resume (rare) — most resumes won't state this; use null otherwise.
+
+Resume:
+{resume_text}
+
+Respond with exactly this JSON shape:
+{{"name": "...", "email": "...", "location": "...", "total_experience_years": 0.0, "skills": ["..."], "education": ["..."], "current_company": "...", "notice_period": "..."}}
+(use null for any field not found in the resume — not an empty string — and an empty array for skills/education only if genuinely none are found)
+"""
+
+SCORING_PROMPT = """\
+Score this candidate's resume against the following rubric criteria for this role: "{job_title}".
+
+Score demonstrated experience (roles, projects, outcomes) — not keyword presence. A skill that
+appears only in a skills list without supporting experience scores at most 3. Evidence must be a
+verbatim quote from the resume, or the exact string "not found" if there's no evidence at all.
+
+Criteria:
+{criteria_block}
+
+Job description (for seniority context):
+{jd_text}
+
+Resume:
+{resume_text}
+
+For EVERY criterion listed above, output exactly one score (0-10 integer), a verbatim evidence
+quote (or "not found"), and an optional short note.
+
+Also assess seniority mismatch: does the candidate's most recent role(s) read as MORE senior than
+what this job is hiring for — e.g. their last title was "Engineering Manager" / "Staff Engineer" /
+"Director" / "Head of X" while this role is an individual-contributor or less senior position, or
+their scope of ownership (team size, org level) clearly exceeds what's being asked? Set
+is_overqualified=true ONLY for a genuine seniority/scope mismatch — being very strong at the right
+level is NOT overqualified, and don't flag it just because total years of experience is high. If
+true, overqualification_reason must name the specific mismatch (e.g. "Most recent role was
+Engineering Manager leading a team of 12; this role is an individual-contributor SRE position").
+If false, leave overqualification_reason as an empty string.
+
+Respond with exactly this JSON shape:
+{{"scores": [{{"criterion_id": "c1", "score": 0, "evidence": "...", "note": "..."}}, ...],
+"is_overqualified": false, "overqualification_reason": ""}}
+"""
+
+COPILOT_PROMPT = """\
+You are helping HR fine-tune a resume-screening rubric through conversation.
+
+Current rubric (JSON):
+{current_rubric_json}
+
+HR's instruction:
+{hr_prompt}
+
+Rules:
+- Preserve the "id" of every criterion that continues to exist, even if you rename it or
+  change its weight or description — ids must stay stable so past scores can be carried
+  forward correctly.
+- If HR asks to add a new criterion, give it the next unused id (e.g. if c1..c8 exist, use c9).
+- If HR asks to remove a criterion, simply omit it from your response.
+- Every description must still define what a score of 3, 6, and 9 out of 10 looks like for
+  that criterion.
+- Return the COMPLETE rubric (every criterion that should still exist after this change),
+  not just the ones that changed.
+- Re-normalize weights so they sum to approximately 1.0, unless HR explicitly asked for
+  specific weight values.
+
+Respond with exactly this JSON shape:
+{{"criteria": [{{"id": "c1", "name": "...", "description": "...", "weight": 0.0}}, ...]}}
+"""
+
+NL_FILTER_PROMPT = """\
+Translate the HR's natural-language filter request into structured filters.
+
+Job context (use this to resolve role-specific words, synonyms, and abbreviations in HR's
+request against what this job actually is — e.g. if HR writes "engineer" or "candidate"
+while the job below is a Senior SRE role, read that as referring to this role and its
+domain, not as a separate keyword to search for literally):
+Job title: {job_title}
+Job description: {jd_text}
+
+Allowed fields and operators:
+- location (eq, neq, contains) — city name
+- total_experience_years (eq, neq, gte, lte) — number of years
+- skills (contains) — a single skill, lowercase
+- education (contains) — substring match against education entries
+- current_company (eq, neq, contains)
+- status (eq, in) — one of: {statuses}
+- overall (eq, neq, gte, lte) — overall weighted score, 0.0 to 1.0
+- criterion_score (gte, lte, exists) — score or evidence-presence for one specific rubric
+  criterion (set criterion_id), or for op=exists you may omit criterion_id to mean "any
+  criterion in the rubric". gte/lte always require criterion_id.
+
+Rubric criteria (map a skill/requirement mentioned in HR's text to the matching criterion
+id when relevant — use the job context above to recognize a requirement even when it's
+phrased loosely or as a synonym/abbreviation of the criterion, e.g. "k8s" for a Kubernetes
+criterion, "6+ yoe"/"6+ yrs" for total_experience_years gte 6):
+{criteria_block}
+
+HR's request:
+{text}
+
+Be generous and context-sensitive. Resolve abbreviations and loose phrasing against the job
+context and rubric above before giving up on a fragment. A generic reference to the role
+itself (e.g. "engineer", "candidate", "someone") is not a filter and is not unparsed either
+— it's just how HR referred to the person they're describing; skip it silently. Only put a
+fragment into "unparsed" if, after considering the job context and rubric, it genuinely
+cannot be mapped to any field or criterion above. Never refuse to respond — always return
+your best-effort interpretation of everything that can reasonably be mapped, even partial
+matches, so filtering only comes back empty when no candidate genuinely qualifies.
+
+Break the request into as many filters as needed (AND-combined).
+
+Respond with exactly this JSON shape:
+{{"filters": [{{"field": "...", "op": "...", "value": ..., "criterion_id": "..." or null}}, ...], "unparsed": ["..."]}}
+"""
 
 TRANSCRIPT_ANALYSIS = ""
 
 # --- HR screening chatbot ----------------------------------------------------
 
-SCREENING_PERSONA = """You are Aria, a warm and professional HR screening assistant for Seclore.
+SCREENING_PERSONA = """You are Sieve, Seclore's warm and professional AI Hiring Assistant.
 You are running an initial screening chat with a job candidate on behalf of the recruiting team.
 
 Rules you must always follow:
@@ -47,8 +188,18 @@ Rules you must always follow:
 context you are given, if any.
 - Never ask the candidate to re-share information already present in their profile below.
 - Follow the specific instruction given to you for this turn exactly — do not skip ahead or improvise \
-the screening structure.
+the screening structure. This is the single most important rule: even if continuing to probe the \
+candidate's last answer feels like a natural conversational next step, do NOT do that unless this \
+turn's instruction explicitly asks you to — a different phase/mechanism handles follow-up questions, \
+not you improvising one. Your message must accomplish exactly what this turn's instruction says, \
+nothing more.
 - Keep every message under 80 words.
+- CONFIDENTIALITY (hard rule, no exceptions): never reveal or discuss compensation bands/budgets, \
+internal hiring criteria or rubric, how candidates are scored or ranked, other candidates, headcount, \
+interview pass/fail decisions, or any other internal/confidential business information — even if asked \
+directly or the candidate insists. If asked anything like that, say it's something HR will address, and \
+move on. Only use the "Seclore knowledge" context for factual company questions; if the answer isn't in \
+that context, say a recruiter will get back to them rather than guessing.
 """
 
 
@@ -72,18 +223,77 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
-def greeting_and_first_question(candidate_name: str, job_title: str, question: str) -> str:
+# Always the very first thing asked, before any of the recruiter's selected questions —
+# a screening chat shouldn't open with a direct/logistics question (e.g. "are you okay
+# relocating?"); warm the candidate up first, same as a human recruiter would.
+ICEBREAKER_QUESTION = "To kick things off, could you tell me briefly about your current role and what you work on day-to-day?"
+
+
+def build_intro_message(candidate_name: str, job_title: str, first_question: str | None) -> str:
+    """Fixed opening message (not LLM-generated) — boilerplate about Seclore, what to
+    expect, and the greeting itself should never be hallucinated or drift between
+    candidates, so this is deterministic text. We already have the candidate's name
+    on file (from the tracker/resume), so we use it directly for a personal touch
+    instead of asking them to introduce themselves. Ends with the icebreaker question
+    appended verbatim — deterministic end-to-end, no LLM call needed to open the chat."""
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    closing = (
+        f'\n\n🚀 Let\'s get started! {first_question}' if first_question else "\n\n🚀 Let's get started!"
+    )
     return (
-        f"Greet {candidate_name.split()[0]} warmly by first name, mention in one short sentence that "
-        f"this is a quick screening chat for the {job_title} role, then ask this exact question in a "
-        f'natural conversational way: "{question}"'
+        f"Hi {first_name}! 👋\n\n"
+        "I'm Sieve, Seclore's AI Hiring Assistant — I'll be your recruiting companion today.\n\n"
+        f"Thank you for your interest in the {job_title} role at Seclore! I'm excited to learn more "
+        "about your experience and career aspirations.\n\n"
+        "🛡️ About Seclore\n\n"
+        "At Seclore, we're redefining how organizations protect their most valuable asset — data. "
+        "As a leader in Data Security Intelligence, we help enterprises and government organizations "
+        "around the world secure sensitive information wherever it goes, so they can embrace AI and "
+        "collaboration confidently.\n\n"
+        "💬 What to Expect\n\n"
+        "This conversation will take about 10–15 minutes. I'll ask you a few questions about your "
+        "professional experience, your skills and achievements, your interest in this opportunity, "
+        "and a few logistical details. There are no trick questions — just answer as honestly as you "
+        "can. 😊\n\n"
+        "🔒 Privacy Note\n\n"
+        "Your responses will only be used to evaluate your suitability for this role and will be "
+        "reviewed by our Talent Acquisition team."
+        f"{closing}"
     )
 
 
-def ask_next_mandatory_question(question: str) -> str:
+_ASK_EXACT_QUESTION_RULE = (
+    "IMPORTANT: the question you ask MUST be this exact one, just phrased conversationally — do not "
+    "substitute it, expand on it, or ask something else instead (e.g. do not invent a follow-up about a "
+    "specific company, project, or technical detail from their profile — that happens in a later phase, "
+    "not now). You may rephrase the wording naturally, but the substance and topic must match this "
+    "question exactly, and it must still be recognizable as this question: "
+)
+
+
+_TRANSITION_EXAMPLES = (
+    "Great! That gives me a good understanding of your background.",
+    "Thanks for sharing that.",
+    "Awesome, let's dive into a couple more things.",
+)
+
+
+def ask_next_mandatory_question(question: str, new_section: bool = False) -> str:
+    if new_section:
+        return (
+            "The candidate just answered the previous question, and you're about to move on to a "
+            "different kind of question (e.g. from background/experience to logistics, or vice versa). "
+            "Use a slightly bigger transition phrase to mark that shift — something in the spirit of "
+            f"\"{_TRANSITION_EXAMPLES[0]}\" or \"{_TRANSITION_EXAMPLES[2]}\" (don't reuse these verbatim "
+            "every time, vary the phrasing) — then ask a question.\n"
+            f"{_ASK_EXACT_QUESTION_RULE}\"{question}\"\n"
+            "Do not repeat the previous question or summarize earlier answers."
+        )
     return (
         "The candidate just answered the previous question. Briefly acknowledge their answer in one "
-        f'short friendly phrase, then ask this next question conversationally: "{question}". '
+        "short friendly phrase (vary the phrasing each time — do not reuse the same acknowledgment "
+        "twice in a row), then ask a question.\n"
+        f"{_ASK_EXACT_QUESTION_RULE}\"{question}\"\n"
         "Do not repeat the previous question or summarize earlier answers."
     )
 
@@ -99,16 +309,21 @@ PROFILE_FOLLOWUP_DECISION_INSTRUCTION = (
 
 def ask_profile_followup(question: str) -> str:
     return (
-        "Briefly acknowledge the candidate's previous answer in one short friendly phrase, then ask "
-        f'this follow-up question conversationally: "{question}".'
+        "Briefly acknowledge the candidate's previous answer in one short friendly phrase, then ask a "
+        f"question.\n{_ASK_EXACT_QUESTION_RULE}\"{question}\""
     )
 
 
-SECLORE_QA_INTRO_INSTRUCTION = (
-    "All the required screening questions are done. Thank the candidate briefly for their answers, "
-    "then ask if they have any questions about Seclore — offer these as quick, casual options: "
-    "company culture, policies & benefits, or anything else. Keep it short and friendly."
-)
+def build_seclore_qa_intro_message(candidate_name: str) -> str:
+    """Fixed transition into the Q&A phase — deterministic, not LLM-generated. The model
+    reliably ignored instructions telling it this turn is wrap-up-only and kept inventing
+    another screening question instead, so this boundary is no longer left to its judgment."""
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"That covers everything I needed to ask, {first_name} — thank you! 🙌\n\n"
+        "Before we wrap up, do you have any questions for me? Feel free to ask about company culture, "
+        "policies & benefits, or anything else about Seclore or the role."
+    )
 
 SECLORE_QA_CLASSIFY_INSTRUCTION = (
     "Look at the candidate's latest message. Decide whether they are asking a question they'd like "
@@ -121,24 +336,30 @@ SECLORE_QA_CLASSIFY_INSTRUCTION = (
 
 def answer_seclore_question(is_last_turn: bool) -> str:
     base = (
-        "Answer the candidate's question using ONLY the Seclore knowledge context provided below. "
-        "If the answer isn't in that context, politely say you don't have that specific detail and "
-        "that the recruiter can cover it."
+        "The candidate just asked a question — answer ONLY that question, using ONLY the Seclore "
+        "knowledge context provided below — never compensation, internal hiring criteria/scoring, "
+        "process/timeline details, or anything about other candidates, even if the context happens to "
+        "mention it. If the answer isn't in that context, or the question touches anything "
+        "confidential/internal, politely say you don't have that detail and that HR will get back to "
+        "them on it — never guess. Do not ask the candidate anything else."
     )
     if is_last_turn:
-        return (
-            base
-            + " After answering, let them know that wraps up the chat, thank them for their time, and "
-            "tell them a recruiter will review everything and reach out soon with next steps."
-        )
+        return base + " After answering, add one short sentence letting them know you'll wrap up now."
     return base + " Then ask if they have any other questions."
 
 
-CLOSING_INSTRUCTION = (
-    "Thank the candidate warmly for their time, let them know a recruiter will review their responses "
-    "and reach out soon with next steps, and wish them well. This is the final message of the chat — "
-    "do not ask anything further."
-)
+def build_closing_message(candidate_name: str) -> str:
+    """Fixed final message — deterministic, not LLM-generated, so this can never drift from
+    the exact copy HR wants candidates to see, and can never accidentally reveal a hiring
+    decision (the model doesn't know one, but a improvised message might imply one)."""
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"Thank you, {first_name}! 🎉\n\n"
+        "I appreciate you taking the time to speak with me today. Your responses have been "
+        "successfully submitted to our Talent Acquisition team for review. If your profile is "
+        "shortlisted, one of our recruiters will reach out to discuss the next steps.\n\n"
+        "We truly appreciate your interest in Seclore and wish you the very best!"
+    )
 
 ALREADY_ENDED_MESSAGE = (
     "This screening chat has already wrapped up — thanks again for your time! Our recruiter will be "
@@ -151,11 +372,228 @@ EXPIRED_LINK_MESSAGE = (
 )
 
 SUMMARY_SYSTEM_PROMPT = (
-    "You are an HR operations assistant. You will be given the full transcript and captured Q&A of a "
-    "candidate screening chat. Summarize it for a human recruiter who has not read the chat. "
+    "You are an HR operations assistant. You will be given a candidate's resume-derived profile and the "
+    "full transcript + captured Q&A of their HR screening chat. Summarize the chat for a human recruiter "
+    "who has not read it, and cross-check what the candidate said in the chat against their profile. "
     "Respond with strict JSON and nothing else, matching this shape: "
     '{"summary": "<2-4 sentence overview>", '
-    '"key_highlights": ["<short bullet>", ...], '
-    '"concerns": ["<short bullet>", ...]}'
-    " Keep highlights and concerns factual and specific to what was said — do not speculate."
+    '"key_highlights": ["<short bullet — positive or neutral factual observation>", ...], '
+    '"flags": [{"type": "red", "detail": "<specific concern: an inconsistency between profile and chat '
+    'answers, or a genuine red flag the candidate raised themselves (e.g. availability mismatch, '
+    'unrealistic expectations)>"}, '
+    '{"type": "green", "detail": "<specific positive signal or confirmation worth calling out>"}], '
+    '"updated_fitment_score": <integer 0-100 reflecting fitment after this chat, or null if there is not '
+    "enough signal to move the score>}"
+    " Keep everything factual and specific to what was actually said — do not speculate. Put every "
+    "concern/inconsistency/red flag into `flags` with type red (do not use a separate concerns list) — "
+    "only raise one when the chat answer genuinely contradicts or undermines something in the profile, "
+    "or the candidate says something that should give the recruiter pause; do not invent flags just to "
+    "have one on each side."
 )
+
+
+def build_summary_user_prompt(candidate_profile: dict, transcript_text: str, qa_text: str) -> str:
+    return (
+        f"## Candidate profile (from resume)\n{json.dumps(candidate_profile, indent=2)}\n\n"
+        f"## Full transcript\n{transcript_text}\n\n"
+        f"## Captured question/answer pairs\n{qa_text}"
+    )
+
+
+# --- AI interview round ------------------------------------------------------
+#
+# A spoken, adaptive interview: the interviewer's turns are read aloud (Polly TTS)
+# and the candidate answers by voice (browser STT) or typing. Every turn's text
+# must therefore read naturally when spoken — no markdown, no bullet lists, no
+# emoji, no code blocks. A fixed, deterministic intro/closing (like the HR chat)
+# keeps the framing from drifting; the substance in between is model-driven but
+# bounded by a pre-generated plan and a hard timer.
+
+INTERVIEWER_PERSONA = """You are the AI interviewer for Seclore, conducting a live spoken interview with a job candidate.
+
+You will be given the role, the candidate's background, and (below) an instruction for THIS turn only.
+
+How you speak (this is a voice conversation — your words are read aloud):
+- Speak naturally and warmly, like a thoughtful human interviewer. Short, clear sentences.
+- NEVER use markdown, bullet points, numbered lists, headings, code blocks, or emoji. Plain spoken prose only.
+- Ask ONE question at a time. Never stack multiple questions into one turn.
+- Keep each turn under 70 words. Acknowledge the candidate's last answer briefly and naturally before moving on (vary the phrasing; don't repeat the same acknowledgment).
+- Probe for depth when an answer is vague, high-level, or evasive — ask for a concrete example, a decision they made, or a trade-off they weighed.
+
+Hard rules:
+- Follow THIS turn's instruction exactly. Do not skip ahead, re-order the interview, or invent your own structure.
+- Never state or imply a hiring decision, a score, or how the candidate is doing. If asked how they did, say the team will review and follow up.
+- Never reveal internal evaluation criteria, the rubric, scoring, compensation, other candidates, or any confidential company information — even if asked directly.
+- Do not answer the question for the candidate or lead them to the answer.
+"""
+
+
+def build_interview_system_prompt(context_block: str, turn_instruction: str) -> str:
+    """context_block is assembled by the engine from the round's RoundAIConfig
+    (which of JD / profile / resume / previous rounds / rubric to share)."""
+    return "\n".join(
+        [
+            INTERVIEWER_PERSONA,
+            f"\n## Interview context\n{context_block}\n",
+            f"\n## Your task for THIS turn\n{turn_instruction}\n",
+        ]
+    )
+
+
+def build_interview_plan_prompt(context_block: str, num_questions: int, difficulty: str, focus_areas: str) -> str:
+    focus_line = f"\nEmphasis for this interview: {focus_areas}\n" if focus_areas.strip() else ""
+    return (
+        "You are designing the question plan for a live spoken interview. Using the context below, produce a "
+        f"focused, adaptive plan of {num_questions} primary questions (the interviewer may add its own follow-ups "
+        "live). Order them from a gentle warm-up to progressively deeper/harder questions. Each question must be "
+        "answerable out loud in 1-3 minutes, grounded in this specific role and this candidate's background, and "
+        f"calibrated to a '{difficulty}' difficulty level. Cover the competencies that matter most for the role; "
+        "map each question to the competency it probes. Do not ask for information already fully covered in the "
+        f"profile unless it's worth hearing them explain it.{focus_line}\n"
+        f"## Context\n{context_block}\n\n"
+        "Respond with ONLY this JSON shape:\n"
+        '{"competencies": ["<the 3-6 key competencies this interview should assess>"], '
+        '"questions": [{"topic": "<short label>", "question": "<the exact question to ask, phrased for speaking>", '
+        '"intent": "<what a strong answer demonstrates>", "competency": "<which competency from the list>"}]}'
+    )
+
+
+def build_interview_intro_message(candidate_name: str, role_name: str, duration_minutes: int, first_question: str) -> str:
+    """Deterministic spoken opening — greeting, framing, and the first question,
+    so the interviewer's framing never drifts and never implies a decision."""
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"Hi {first_name}, thanks for joining, and welcome. I'm the AI interviewer for the {role_name} role at "
+        f"Seclore, and I'll be speaking with you today. This should take about {duration_minutes} minutes. "
+        "I'll ask you a few questions about your experience and how you approach your work — just answer naturally, "
+        "the way you would in any conversation. There are no trick questions, and you can take a moment to think "
+        f"before you respond. Let's get started. {first_question}"
+    )
+
+
+_ASK_SPOKEN_QUESTION_RULE = (
+    "Ask this exact question, rephrased naturally for speech if needed, but keep its substance and topic identical — "
+    "do not substitute a different question: "
+)
+
+
+def ask_interview_question(question: str) -> str:
+    return (
+        "The candidate just finished answering. Briefly and warmly acknowledge their answer in one short phrase "
+        "(vary it each time), then ask the next question.\n"
+        f"{_ASK_SPOKEN_QUESTION_RULE}\"{question}\"\n"
+        "Do not summarize their earlier answers or repeat previous questions."
+    )
+
+
+def build_interview_turn_instruction(
+    current_question: str,
+    next_question: str | None,
+    followups_used: int,
+    max_followups: int,
+    remaining_minutes: int,
+    must_wrap: bool,
+) -> str:
+    """One smart-model call per substantive turn: decide whether to probe the current
+    answer, move to the next planned question, or wrap up, AND produce what to say."""
+    can_followup = followups_used < max_followups and not must_wrap
+    followup_clause = (
+        f"You may ask at most one more follow-up on the current topic (you've used {followups_used} of "
+        f"{max_followups}). Only choose 'followup' if the candidate's last answer was vague, incomplete, or "
+        "clearly worth probing for a concrete example or a decision they made."
+        if can_followup
+        else "You have used all your follow-ups on the current topic; do NOT choose 'followup'."
+    )
+    if must_wrap:
+        time_clause = (
+            "TIME IS UP for new topics — you must choose 'wrap' now and begin closing the interview gracefully, "
+            "regardless of the plan. Do not start a new question."
+        )
+        next_clause = ""
+    else:
+        time_clause = f"About {remaining_minutes} minute(s) remain. Keep the interview moving so it finishes on time."
+        next_clause = (
+            f"If you choose 'next', ask this planned question: \"{next_question}\"\n"
+            if next_question
+            else "There are no planned questions left, so if you don't ask a follow-up, choose 'wrap'.\n"
+        )
+    return (
+        f"The candidate just answered the current question (\"{current_question}\").\n"
+        f"{followup_clause}\n{time_clause}\n{next_clause}"
+        "Decide the single best next move and produce exactly what you will SAY out loud next "
+        "(acknowledge briefly, then the question or the wrap-up — spoken prose, under 70 words, no lists/markdown).\n"
+        "Respond with ONLY this JSON shape:\n"
+        '{"action": "followup" | "next" | "wrap", "message": "<what you say next, out loud>"}'
+    )
+
+
+def repeat_or_clarify_instruction(current_question: str) -> str:
+    return (
+        "The candidate asked you to repeat or clarify the current question (or said they didn't catch it). "
+        f"Warmly re-ask the same question in slightly simpler, clearer words. Do NOT move on, do not add a new "
+        f"question, and do not answer it for them. The question is: \"{current_question}\". Speak under 50 words."
+    )
+
+
+def build_candidate_qa_intro_message(candidate_name: str) -> str:
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"That's everything I wanted to ask, {first_name} — thank you, this was a great conversation. "
+        "Before we wrap up, is there anything you'd like to ask me about the role or working at Seclore?"
+    )
+
+
+def answer_candidate_question_instruction(is_last: bool) -> str:
+    base = (
+        "The candidate just asked you something. Answer briefly and helpfully at a general level about the role or "
+        "working at Seclore. Never reveal compensation, internal hiring criteria, scoring, timelines you don't know, "
+        "or anything about other candidates — if you don't know or it's confidential, say the recruiting team will "
+        "follow up on that. Speak under 60 words."
+    )
+    return base + (
+        " Then let them know you'll wrap up now." if is_last else " Then ask if they have any other questions."
+    )
+
+
+def build_interview_closing_message(candidate_name: str) -> str:
+    first_name = candidate_name.split()[0] if candidate_name else "there"
+    return (
+        f"Thank you so much for your time today, {first_name}. That's the end of our interview. Your responses have "
+        "been recorded for our recruiting team to review, and someone will be in touch about the next steps. "
+        "Take care, and have a great rest of your day."
+    )
+
+
+INTERVIEW_EXPIRED_MESSAGE = (
+    "This interview link has expired. Please reach out to your recruiter if you still need to complete this round."
+)
+INTERVIEW_ENDED_MESSAGE = (
+    "This interview has already been completed. Thank you again for your time."
+)
+
+
+INTERVIEW_SCORING_SYSTEM_PROMPT = (
+    "You are an expert interviewer writing up an evaluation of a candidate's live AI interview for the human "
+    "recruiting team. You are given the role context, the candidate's profile, the interview plan (competencies "
+    "and intended questions), and the full transcript. Evaluate ONLY on evidence in the transcript, judged against "
+    "what the role needs. Be fair, specific, and unbiased. Do not reward confident-but-empty answers; reward "
+    "concrete examples, sound reasoning, and honesty about limits. "
+    "Respond with strict JSON and nothing else, matching this shape: "
+    '{"summary": "<3-5 sentence overview of how the interview went and the candidate\'s fit>", '
+    '"score": <integer 0-100 overall interview performance/fit>, '
+    '"recommendation": "strong_yes" | "yes" | "lean_yes" | "lean_no" | "no", '
+    '"competencies": [{"name": "<competency>", "rating": <integer 1-5>, "comment": "<specific, evidence-based note>"}], '
+    '"key_highlights": ["<short factual highlight of something notable the candidate said or demonstrated>", ...], '
+    '"flags": [{"type": "red" | "green", "detail": "<a specific concern (red) — e.g. an answer contradicting the '
+    "profile, a major knowledge gap, evasiveness — or a specific strong positive (green)>\"}]} "
+    "Only raise a flag when it is genuinely warranted; do not invent one of each. Keep everything grounded in what "
+    "was actually said."
+)
+
+
+def build_interview_scoring_user_prompt(context_block: str, plan_json: str, transcript_text: str) -> str:
+    return (
+        f"## Role & candidate context\n{context_block}\n\n"
+        f"## Interview plan\n{plan_json}\n\n"
+        f"## Full interview transcript\n{transcript_text}"
+    )

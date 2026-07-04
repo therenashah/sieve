@@ -69,6 +69,11 @@ class CriterionScore(BaseModel):
 
 class ScoreSheet(BaseModel):
     scores: list[CriterionScore]
+    # Seniority-mismatch flag: candidate's recent experience reads as MORE senior than
+    # this role, not just "very qualified". Recomputed on every scoring call (including
+    # selective re-scores) since it's part of the same LLM response, not a separate call.
+    is_overqualified: bool = False
+    overqualification_reason: str = ""
 
     def validate_criteria(self, expected_ids: list[str]) -> "ScoreSheet":
         actual_ids = [s.criterion_id for s in self.scores]
@@ -87,6 +92,7 @@ class Filter(BaseModel):
     field: Literal[
         "location",
         "total_experience_years",
+        "experience_bucket",
         "skills",
         "education",
         "current_company",
@@ -137,6 +143,59 @@ class ApplyResult(BaseModel):
     rescore_criterion_ids: list[str]  # added + edited_descriptions
 
 
+class FilterParseRequest(BaseModel):
+    text: str
+
+
+class RubricChatRequest(BaseModel):
+    message: str
+    proposed_rubric: Rubric | None = None  # a prior in-session proposal to keep iterating on
+
+
+class RoundAIConfig(BaseModel):
+    """What the AI interviewer bot for this round is given/asked to do. Stored as-is
+    (not just UI decoration) — the interview engine reads this directly to decide what
+    context to share, how long to run, how to behave, and what to produce afterward."""
+
+    # What context to share with the interviewer
+    share_jd: bool = True
+    share_profile: bool = True
+    share_resume: bool = True
+    share_previous_rounds: bool = True
+    share_rubric: bool = True
+    instructions: str = ""
+
+    # How the interview runs
+    duration_minutes: int = 30           # approximate target length; drives the timer + wrap-up
+    difficulty: Literal["easy", "balanced", "hard"] = "balanced"
+    focus_areas: str = ""                # optional free-text emphasis ("system design, ownership")
+    allow_candidate_questions: bool = True  # brief candidate Q&A before wrapping up
+
+    # Outcome & evaluation
+    store_transcript: bool = True
+    store_recording: bool = False        # candidate video/audio recorded via the browser for proctoring
+    generate_scorecard: bool = True
+    flag_inconsistencies: bool = True
+
+    @field_validator("duration_minutes")
+    @classmethod
+    def _clamp_duration(cls, v: int) -> int:
+        return max(5, min(90, v))
+
+
+class AddRoundRequest(BaseModel):
+    template_key: str  # one of the ROUND_TEMPLATES keys ("custom" mints a fresh round_key)
+    name: str | None = None  # required override when template_key == "custom"
+    description: str | None = None
+
+
+class UpdateRoundRequest(BaseModel):
+    name: str
+    description: str = ""
+    is_ai_based: bool = False
+    ai_config: RoundAIConfig | None = None
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -147,10 +206,22 @@ class LoginResponse(BaseModel):
     expires_at: str
 
 
+class TriggerScreeningRequest(BaseModel):
+    question_ids: list[int] = Field(default_factory=list)
+
+
+class ExportCandidatesRequest(BaseModel):
+    candidate_ids: list[int]
+
+
 class TriggerScreeningResponse(BaseModel):
     token: str
     chat_url: str
     expires_at: str
+
+
+class AddQuestionRequest(BaseModel):
+    question_text: str
 
 
 class ChatMessage(BaseModel):
@@ -174,3 +245,60 @@ class SessionStatusResponse(BaseModel):
     candidate_name: str
     job_title: str
     messages: list[ChatMessage]
+
+
+# --- AI interview round ------------------------------------------------------
+
+
+class TriggerInterviewRequest(BaseModel):
+    round_key: str  # which AI-based round on the job this interview is for
+
+
+class TriggerInterviewResponse(BaseModel):
+    token: str
+    interview_url: str
+    expires_at: str
+
+
+class ScheduleInterviewRequest(BaseModel):
+    slot: str  # ISO datetime chosen from the offered slots
+
+
+class InterviewMessageRequest(BaseModel):
+    message: str
+
+
+class ProctorEventRequest(BaseModel):
+    type: str          # e.g. "tab_hidden" | "tab_visible" | "camera_off" | "no_face"
+    detail: str = ""
+
+
+class InterviewTurnMessage(BaseModel):
+    role: str          # assistant | candidate
+    content: str
+    audio_b64: str | None = None  # base64 mp3 of the assistant turn (None -> browser TTS)
+
+
+class InterviewTurnResponse(BaseModel):
+    status: str        # invited | scheduled | in_progress | completed | expired
+    phase: str         # INTRO | INTERVIEW | WRAPUP | ENDED
+    messages: list[InterviewTurnMessage]
+    remaining_seconds: int | None = None   # until the hard stop, once started
+    should_wrap_up: bool = False
+
+
+class InterviewStatusResponse(BaseModel):
+    status: str
+    phase: str
+    candidate_name: str
+    job_title: str
+    round_name: str
+    instructions: str
+    duration_minutes: int
+    store_recording: bool
+    allow_candidate_questions: bool
+    scheduled_at: str | None = None
+    expires_at: str
+    slots: list[str] = Field(default_factory=list)          # offered scheduling slots (when unscheduled)
+    messages: list[InterviewTurnMessage] = Field(default_factory=list)  # transcript (when in progress)
+    remaining_seconds: int | None = None
