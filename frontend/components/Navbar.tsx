@@ -6,6 +6,7 @@ import { useState } from "react";
 import { search } from "@/lib/api";
 import type { SearchResult } from "@/lib/api";
 import { clearToken } from "@/lib/auth";
+import SieveLogo from "./SieveLogo";
 
 export default function Navbar({ title }: { title?: string }) {
   const router = useRouter();
@@ -58,7 +59,9 @@ export default function Navbar({ title }: { title?: string }) {
     <header className="navbar">
       <div className="navbar-inner">
         <div className="navbar-brand" onClick={() => router.push("/jobs")}>
-          <span className="navbar-mark">S</span>
+          <span className="navbar-mark">
+            <SieveLogo size={16} />
+          </span>
           <span className="navbar-word">sieve</span>
         </div>
         {title && <div className="navbar-title">{title}</div>}
