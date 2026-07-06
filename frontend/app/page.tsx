@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { ApiError, login } from "@/lib/api";
 import { setToken } from "@/lib/auth";
+import SieveLogo from "@/components/SieveLogo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -37,7 +38,9 @@ export default function LoginPage() {
       <section className="login-hero">
         <div className="login-hero-content">
           <div className="brand-mark">
-            <span className="brand-mark-glyph">S</span>
+            <span className="brand-mark-glyph">
+              <SieveLogo size={20} />
+            </span>
             <span>sieve</span>
           </div>
           <h1>Screen candidates with evidence, not guesswork.</h1>
